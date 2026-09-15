@@ -48,6 +48,7 @@ if let exportPath = argumentValue("-export") {
         FileHandle.standardError.write(Data("[export] unknown preset\n".utf8))
         exit(2)
     }
+    let format: ExportFormat = (argumentValue("-format") ?? "mp4") == "gif" ? .gif : .mp4
     var trimRange: ClosedRange<Double>?
     if let rangeArg = argumentValue("-range") {
         let parts = rangeArg.split(separator: ",").compactMap { Double($0) }
@@ -62,6 +63,7 @@ if let exportPath = argumentValue("-export") {
                                      outputURL: URL(fileURLWithPath: exportPath),
                                      preset: preset,
                                      aspect: aspect,
+                                     format: format,
                                      trimRange: trimRange)
     let semaphore = DispatchSemaphore(value: 0)
     var exitCode: Int32 = 0

@@ -7,6 +7,7 @@ struct ExportPanelView: View {
 
     @State private var preset: ExportPreset = .sourceNative
     @State private var aspect: ExportAspect = .a16x9
+    @State private var format: ExportFormat = .mp4
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -20,6 +21,12 @@ struct ExportPanelView: View {
                 Text("4K 60 fps").tag(ExportPreset.p4k_60)
             }
             .pickerStyle(.menu)
+
+            Picker("Format", selection: $format) {
+                Text("MP4").tag(ExportFormat.mp4)
+                Text("GIF (480p, ≤30 fps)").tag(ExportFormat.gif)
+            }
+            .pickerStyle(.segmented)
 
             Picker("Aspect", selection: $aspect) {
                 Text("16:9").tag(ExportAspect.a16x9)
@@ -69,11 +76,11 @@ struct ExportPanelView: View {
 
     private func exportTapped() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "\(viewModel.videoSize.width > 0 ? "VibeStudio" : "export")-\(aspect.rawValue).mp4"
+        panel.allowedContentTypes = [format == .gif ? .gif : .mpeg4Movie]
+        panel.nameFieldStringValue = "VibeStudio-\(aspect.rawValue).\(format == .gif ? "gif" : "mp4")"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            viewModel.startExport(preset: preset, aspect: aspect, outputURL: url)
+            viewModel.startExport(preset: preset, aspect: aspect, format: format, outputURL: url)
         }
     }
 }

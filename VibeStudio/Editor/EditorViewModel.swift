@@ -20,6 +20,8 @@ final class EditorViewModel: ObservableObject {
     @Published var selectedKeyframeID: UUID?
     @Published var exportProgress: Double?
     @Published var exportError: String?
+    @Published var presets: [SettingsPreset] = []
+    @Published var presetError: String?
 
     @Published var keyframes: [CameraKeyframe] = [] {
         didSet { if !isLoading { schedulePersist() } }
@@ -42,6 +44,7 @@ final class EditorViewModel: ObservableObject {
     private(set) var rawPath: [CursorPoint] = []
     private(set) var smoothedPath: [CursorPoint] = []
     private(set) var clicks: [CursorPoint] = []
+    private(set) var keyBadges: [(t: Double, text: String)] = []
     private var analysis: ProjectAnalysis?
     private var bundleURL: URL?
     private var timeObserver: Any?
@@ -57,8 +60,13 @@ final class EditorViewModel: ObservableObject {
 
     var exportRange: ClosedRange<Double> {
         let start = min(max(settings.trimStart ?? 0, 0), duration)
-        let end = min(max(settings.trimEnd ?? duration, start), duration)
+        let end = min(max(settings.trimEnd ?? timelineEnd, start), timelineEnd)
         return start...max(end, start + 0.1)
+    }
+
+    /// Scrubber upper bound: recording duration plus the loop segment when on.
+    var timelineEnd: Double {
+        duration + (settings.loopCursorEnd == true ? LoopCursorEnd.loopSeconds : 0)
     }
 
     init(url: URL) {
@@ -87,6 +95,11 @@ final class EditorViewModel: ObservableObject {
             self.analysis = analysis
             rawPath = analysis.rawPath
             clicks = analysis.clicks
+            keyBadges = analysis.project.events.compactMap { event in
+                guard event.kind == .key else { return nil }
+                return KeystrokeBadges.badgeText(modifiers: event.modifiers, key: event.key)
+                    .map { (event.t, $0) }
+            }
             duration = analysis.duration
             videoSize = analysis.videoSize
             renderer.screenVideoSize = analysis.videoSize
@@ -109,6 +122,7 @@ final class EditorViewModel: ObservableObject {
             recomputeSmoothedPath()
 
             addTimeObserver()
+            refreshPresets()
             didLoad = true
             print("[VibeStudio] editor loaded \(bundleURL.lastPathComponent): "
                   + "\(rawPath.count) raw / \(smoothedPath.count) smoothed points, "
@@ -198,9 +212,46 @@ final class EditorViewModel: ObservableObject {
         selectedKeyframeID = nil
     }
 
+    // MARK: - Presets
+
+    func refreshPresets() {
+        presets = (try? PresetStore.list(in: PresetStore.defaultDirectory())) ?? []
+    }
+
+    func savePreset(name: String) {
+        let preset = SettingsPreset(name: name, settings: settings, createdAt: Date())
+        do {
+            try PresetStore.save(preset, in: PresetStore.defaultDirectory())
+            presetError = nil
+            refreshPresets()
+        } catch {
+            presetError = error.localizedDescription
+        }
+    }
+
+    func applyPreset(_ preset: SettingsPreset) {
+        settings = preset.settings
+    }
+
+    func copyPresetJSON() {
+        guard let json = try? PresetStore.json(for: settings) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(json, forType: .string)
+    }
+
+    func importPresetJSON() {
+        guard let string = NSPasteboard.general.string(forType: .string),
+              let imported = PresetStore.settings(fromJSON: string) else {
+            presetError = "Clipboard does not contain preset JSON."
+            return
+        }
+        presetError = nil
+        settings = imported
+    }
+
     // MARK: - Export
 
-    func startExport(preset: ExportPreset, aspect: ExportAspect, outputURL: URL) {
+    func startExport(preset: ExportPreset, aspect: ExportAspect, format: ExportFormat = .mp4, outputURL: URL) {
         guard let bundleURL, exportProgress == nil else { return }
         let cancel = CancelToken()
         exportCancel = cancel
@@ -210,6 +261,7 @@ final class EditorViewModel: ObservableObject {
                                          outputURL: outputURL,
                                          preset: preset,
                                          aspect: aspect,
+                                         format: format,
                                          trimRange: exportRange)
         Task.detached { [self] in
             do {
@@ -241,12 +293,20 @@ final class EditorViewModel: ObservableObject {
 
     private func currentFrameState() -> CompositorFrameState {
         guard didLoad, let analysis else { return CompositorFrameState() }
-        return FrameStateBuilder.make(t: player.currentTime().seconds,
+        // Loop-end preview: when the slider is dragged past the recording end
+        // with loop enabled, render the synthetic loop segment.
+        let playerT = player.currentTime().seconds
+        let t = settings.loopCursorEnd == true && currentTime > duration && playerT >= duration - 0.05
+            ? currentTime : playerT
+        return FrameStateBuilder.make(t: t,
                                       cameraModel: cameraModel,
                                       smoothedPath: smoothedPath,
                                       videoSize: analysis.videoSize,
                                       settings: settings,
-                                      frameDT: frameDT)
+                                      frameDT: frameDT,
+                                      clicks: clicks,
+                                      keyBadges: keyBadges,
+                                      duration: duration)
     }
 
     // MARK: - Playback

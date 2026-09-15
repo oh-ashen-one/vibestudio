@@ -4,6 +4,7 @@ import SwiftUI
 /// background gallery, camera layout. Everything live-updates the preview.
 struct InspectorView: View {
     @ObservedObject var viewModel: EditorViewModel
+    @State private var presetName = ""
 
     var body: some View {
         ScrollView {
@@ -13,6 +14,7 @@ struct InspectorView: View {
                 framingSection
                 backgroundSection
                 layoutSection
+                presetsSection
                 Divider()
                 Button("Regenerate auto-zoom") {
                     viewModel.regenerateKeyframes()
@@ -34,7 +36,13 @@ struct InspectorView: View {
                 Text("Slow").tag(SmoothnessPreset.slow)
             }
             .pickerStyle(.menu)
+            Toggle("Hide when static", isOn: optionalBool($viewModel.settings.hideStaticCursor))
+            Toggle("Loop cursor end", isOn: optionalBool($viewModel.settings.loopCursorEnd))
         }
+    }
+
+    private func optionalBool(_ binding: Binding<Bool?>) -> Binding<Bool> {
+        Binding(get: { binding.wrappedValue ?? false }, set: { binding.wrappedValue = $0 })
     }
 
     private var zoomSection: some View {
@@ -94,6 +102,37 @@ struct InspectorView: View {
                 Text("No webcam track in this project.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var presetsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Presets")
+            if !viewModel.presets.isEmpty {
+                Menu("Apply preset…") {
+                    ForEach(viewModel.presets) { preset in
+                        Button(preset.name) { viewModel.applyPreset(preset) }
+                    }
+                }
+            }
+            HStack {
+                TextField("Preset name", text: $presetName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Save") {
+                    viewModel.savePreset(name: presetName)
+                    presetName = ""
+                }
+                .disabled(presetName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            HStack {
+                Button("Copy JSON") { viewModel.copyPresetJSON() }
+                Button("Import") { viewModel.importPresetJSON() }
+            }
+            if let error = viewModel.presetError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
     }

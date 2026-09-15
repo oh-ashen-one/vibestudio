@@ -61,18 +61,22 @@ struct EditorView: View {
                     .overlay {
                         GeometryReader { geometry in
                             let pad = geometry.size.width * viewModel.settings.padding
-                            CursorOverlayView(quadRect: CGRect(origin: .zero, size: geometry.size)
-                                                  .insetBy(dx: pad, dy: pad),
+                            let quad = CGRect(origin: .zero, size: geometry.size).insetBy(dx: pad, dy: pad)
+                            let src = viewModel.cameraModel.state(
+                                at: viewModel.currentTime,
+                                videoSize: viewModel.videoSize
+                            ).sourceRect(videoSize: viewModel.videoSize)
+                            CursorOverlayView(quadRect: quad,
                                               currentTime: viewModel.currentTime,
-                                              sourceRect: viewModel.cameraModel.state(
-                                                  at: viewModel.currentTime,
-                                                  videoSize: viewModel.videoSize
-                                              ).sourceRect(videoSize: viewModel.videoSize),
+                                              sourceRect: src,
                                               rawPath: viewModel.rawPath,
                                               smoothedPath: viewModel.smoothedPath,
                                               clicks: viewModel.clicks,
                                               showRaw: viewModel.showRawPath,
                                               showSmoothed: viewModel.showSmoothedPath)
+                            ManualZoomEditOverlay(viewModel: viewModel,
+                                                  quadRect: quad,
+                                                  sourceRect: src)
                         }
                     }
             } else {
@@ -101,7 +105,7 @@ struct EditorView: View {
 
             Slider(value: Binding(get: { viewModel.currentTime },
                                   set: { viewModel.seek(to: $0) }),
-                   in: 0...max(viewModel.duration, 0.01))
+                   in: 0...max(viewModel.timelineEnd, 0.01))
 
             Text(EditorViewModel.timeString(viewModel.duration))
                 .monospacedDigit()
