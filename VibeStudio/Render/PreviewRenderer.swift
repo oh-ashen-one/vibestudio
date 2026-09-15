@@ -27,6 +27,12 @@ final class PreviewRenderer: NSObject {
     static let bubbleWidthFraction: CGFloat = 0.22
     static let bubbleMarginFraction: CGFloat = 0.035
 
+    /// Unbuffered diagnostics — print() is block-buffered when stdout is
+    /// redirected, so anything meant for live debugging goes to stderr.
+    static func log(_ message: String) {
+        FileHandle.standardError.write(Data(("[VibeStudio/render] \(message)\n").utf8))
+    }
+
     private(set) var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var pipeline: MTLRenderPipelineState?
@@ -41,6 +47,12 @@ final class PreviewRenderer: NSObject {
     private var webcamTextureSource: CVMetalTexture?
     private var didLogFirstScreenFrame = false
     private var didLogFirstWebcamFrame = false
+    private var tickCount = 0
+    private var pullAttempts = 0
+    private var pullHasNew = 0
+    private var pullCopied = 0
+    private var drawCount = 0
+    private var drawWithScreenTexture = 0
 
     private var screenOutput: AVPlayerItemVideoOutput?
     private var webcamOutput: AVPlayerItemVideoOutput?
@@ -96,8 +108,9 @@ final class PreviewRenderer: NSObject {
             ])
             item.add(output)
             screenOutput = output
+            Self.log("attachPlayers: screen output attached (outputs=\(item.outputs.count))")
         } else {
-            print("[VibeStudio] renderer: screen player has no currentItem at attach — no frames will be pulled")
+            Self.log("attachPlayers: screen player has NO currentItem — no frames will be pulled")
         }
         webcamPlayer = webcam
         if let item = webcam?.currentItem {
@@ -106,30 +119,42 @@ final class PreviewRenderer: NSObject {
             ])
             item.add(output)
             webcamOutput = output
+            Self.log("attachPlayers: webcam output attached")
         }
     }
 
     func attach(view: MTKView) {
         self.view = view
+        Self.log("attach(view:) device=\(view.device != nil)")
     }
 
     @objc func displayLinkTick() {
+        tickCount += 1
         pullScreenFrame()
         pullWebcamFrame()
         view?.setNeedsDisplay(view?.bounds ?? .zero)
+        if tickCount == 120 || tickCount % 600 == 0 {
+            let healthy = pullCopied > 0 && drawWithScreenTexture > 0
+            if !healthy {
+                Self.log("UNHEALTHY ticks=\(tickCount) pullAttempts=\(pullAttempts) hasNew=\(pullHasNew) copied=\(pullCopied) draws=\(drawCount) drawsWithTexture=\(drawWithScreenTexture) screenTexture=\(screenTexture != nil)")
+            }
+        }
     }
 
     private func pullScreenFrame() {
         guard let output = screenOutput, let player = screenPlayer else { return }
+        pullAttempts += 1
         let time = player.currentTime()
-        guard output.hasNewPixelBuffer(forItemTime: time),
-              let pixelBuffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
+        guard output.hasNewPixelBuffer(forItemTime: time) else { return }
+        pullHasNew += 1
+        guard let pixelBuffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
+        pullCopied += 1
         guard let source = makeTextureSource(from: pixelBuffer) else { return }
         screenTextureSource = source
         screenTexture = CVMetalTextureGetTexture(source)
         if !didLogFirstScreenFrame {
             didLogFirstScreenFrame = true
-            print("[VibeStudio] renderer: first screen frame pulled t=\(time.seconds)s")
+            Self.log("first screen frame pulled t=\(time.seconds)s")
         }
     }
 
@@ -143,7 +168,7 @@ final class PreviewRenderer: NSObject {
         webcamTexture = CVMetalTextureGetTexture(source)
         if !didLogFirstWebcamFrame {
             didLogFirstWebcamFrame = true
-            print("[VibeStudio] renderer: first webcam frame pulled t=\(time.seconds)s")
+            Self.log("first webcam frame pulled t=\(time.seconds)s")
         }
     }
 
@@ -155,7 +180,7 @@ final class PreviewRenderer: NSObject {
             CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer),
             0, &texture)
         guard status == kCVReturnSuccess, let texture else {
-            print("[VibeStudio] renderer: CVMetalTextureCacheCreateTextureFromImage failed status=\(status)")
+            Self.log("CVMetalTextureCacheCreateTextureFromImage failed status=\(status)")
             return nil
         }
         return texture
@@ -175,7 +200,9 @@ final class PreviewRenderer: NSObject {
 
         encoder.setRenderPipelineState(pipeline)
 
+        drawCount += 1
         if let screenTexture, state.layout != .webcamFull {
+            drawWithScreenTexture += 1
             encode(encoder, texture: screenTexture,
                    dst: CGRect(x: -1, y: -1, width: 2, height: 2),
                    uv: state.screenUVRect,
@@ -347,15 +374,24 @@ struct PreviewMetalView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero, device: renderer.device)
+        let view = PreviewMTKView(frame: .zero, device: renderer.device)
         view.delegate = renderer
         view.enableSetNeedsDisplay = true
         view.isPaused = true
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         renderer.attach(view: view)
-        context.coordinator.displayLink = view.displayLink(target: renderer,
-                                                           selector: #selector(PreviewRenderer.displayLinkTick))
+        // NB: NSView.displayLink(target:selector:) only works once the view is
+        // in a window — in makeNSView it returns nil/never fires, which left
+        // the pull loop dead (black video). Install it from viewDidMoveToWindow.
+        view.onMovedToWindow = { [weak view, weak coordinator = context.coordinator] in
+            guard let view, let coordinator, coordinator.displayLink == nil else { return }
+            let link = view.displayLink(target: renderer,
+                                        selector: #selector(PreviewRenderer.displayLinkTick))
+            link.add(to: .main, forMode: .common)
+            coordinator.displayLink = link
+            PreviewRenderer.log("displayLink installed")
+        }
         return view
     }
 
@@ -363,10 +399,20 @@ struct PreviewMetalView: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: MTKView, coordinator: Coordinator) {
         coordinator.displayLink?.invalidate()
+        (nsView as? PreviewMTKView)?.onMovedToWindow = nil
     }
 
     final class Coordinator {
         var displayLink: CADisplayLink?
+    }
+}
+
+private final class PreviewMTKView: MTKView {
+    var onMovedToWindow: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { onMovedToWindow?() }
     }
 }
 
