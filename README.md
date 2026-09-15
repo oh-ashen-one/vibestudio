@@ -90,15 +90,58 @@ tccutil reset Accessibility dev.vibestudio.app
 ## Verification status (acceptance criteria)
 
 - [x] Fresh clone → `./scripts/build.sh` builds in seconds; `./scripts/test.sh`
-      green (105 tests)
+      green (111 tests, including an automated preview-vs-export consistency
+      test: real FrameStateBuilder+FrameComposer renders vs real ExportRenderer
+      output at three timestamps — mean abs luma diff ≤0.41/255, PSNR ≥49.6dB)
 - [x] Zero network calls / accounts / telemetry in app sources; MIT licensed
 - [x] Auto-zoom + smooth cursor + motion blur + styled frame visible in
       exports; every auto-zoom editable on the timeline with live preview
 - [x] 9:16 re-targeting keeps the action framed
-- [ ] End-to-end recording on this machine (pending macOS Screen Recording /
-      Input Monitoring permission grant for the ad-hoc-signed dev build)
+- [x] End-to-end recording on this machine (pill-driven 30s+ recording with
+      pause/resume; moov intact; events within [0, duration]; pill excluded
+      from its own capture)
 - [ ] Side-by-side comparison GIFs against a real Screen Studio export
-      (planned once the permission above is granted)
+      (planned when the machine is free for interactive work)
+
+## Known limitations vs Screen Studio
+
+Implemented and verified: pill-driven recording (display/window/area sources,
+camera + mic + system audio, pause/resume, self-exclusion), event capture
+(cursor/click/scroll/key/frontmost-window), project bundles, auto-zoom with
+editable timeline, smoothed synthetic cursor, motion blur, styled frames with
+background gallery, webcam bubble/full layouts, aspect-ratio re-targeted MP4
+export, In/Out trim, GIF export, click ripples, keystroke badges,
+hide-static-cursor, loop cursor end, settings presets.
+
+Missing or weaker than Screen Studio:
+
+- **Speed-up segments** — deferred (logged in DECISIONS.md). Timeline has
+  In/Out trim only.
+- **Audio cleanup** — no voice normalization or background-noise removal.
+- **Transcription / captions** — not implemented.
+- **iPhone/iPad recording** — device mode is shown disabled in the pill (v2).
+- **Shareable links / cloud** — out of scope by design (zero network).
+- **Webcam bubble dodge-the-cursor** — bubble is fixed bottom-right.
+- **Cursor variants** — only the arrow is re-rendered synthetically; other
+  system cursors (I-beam, pointer, crosshair) are not swapped for high-res
+  versions (cursorType is captured in events.json but not acted on).
+- **GIF quality** — median-cut global palette is fine for UI content;
+  photographic content will band.
+- **4K export performance** — the serialized per-frame render loop is
+  unmeasured at 4K; 1080p60 exports of 30s fixtures complete in seconds.
+
+Honest caveats already on record (see DECISIONS.md):
+
+- The one observed writer stall (video stopped growing ~6s into a 4.5min
+  recording) is **instrumented but not proven fixed** — it did not recur in
+  later live recordings; permanent stderr counters now report pipeline health.
+- Webcam/screen sync in the **preview** uses two unsynchronized AVPlayers;
+  sample-accurate sync (meta host-time offsets) is applied at export only.
+- Loop-cursor-end is previewable only by dragging the playhead past the end
+  (AVPlayer cannot play past the media end); it renders fully in exports.
+- Window-mode and area-mode capture are code-complete but exercised less
+  than display mode in live testing.
+- No Windows/Linux support; macOS 14+ only.
 
 ## License
 
