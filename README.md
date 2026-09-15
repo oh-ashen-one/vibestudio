@@ -70,7 +70,9 @@ tccutil reset Accessibility dev.vibestudio.app
 - [x] Phase 2 — project model + player (code complete; editor window
       appearance/playback verified headlessly via fixture + smoke test,
       interactive visual verification pending)
-- [ ] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
+- [x] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
+      (code complete; auto-zoom + camera evaluation verified headlessly on the
+      fixture, on-screen visual verification pending)
 - [ ] Phase 4 — export (MP4, aspect-ratio re-targeting)
 - [ ] Phase 5 — polish (click ripples, keystroke badges, GIF, presets)
 

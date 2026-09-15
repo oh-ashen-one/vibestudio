@@ -30,12 +30,28 @@ Guidance for coding agents working in this repo.
   - `RecordingSettings.swift` — settings persisted as JSON in UserDefaults.
   - `OutputLocation.swift` — `~/Movies/VibeStudio/<timestamp>/` session folders.
 - `VibeStudio/Project/ProjectBundle.swift` — `.vibestudio` package: `ProjectState`
-  (project.json), `ProjectStore.importLooseFolder` / `load`. CGRect/CGSize
+  (project.json; v2 adds optional `keyframes` + `editorSettings`, v1 still decodes),
+  `ProjectStore.importLooseFolder` / `load` / `save`. CGRect/CGSize
   encode as arrays (`[[x,y],[w,h]]` / `[w,h]`) — keep fixtures byte-compatible.
+- `VibeStudio/Core/AutoZoomEngine.swift` — §3.3: activity extraction →
+  clustering (T_merge 1.5 s, last-activity spatial chaining) → focus rects →
+  `CameraKeyframe` timeline (zoom-in anticipation, pan vs zoom-out, clamps).
+- `VibeStudio/Core/CameraModel.swift` — `CameraState` + spring-eased camera
+  evaluation over keyframes (Focused/Smooth), `SpringCurve` normalized
+  critically-damped easing, log-space zoom interpolation.
+- `VibeStudio/Core/EditorSettings.swift` — inspector state (cursor size,
+  smoothness preset, zoom style, blur, background spec, padding/corners/shadow,
+  camera layout), persisted in project.json.
+- `VibeStudio/Render/PreviewRenderer.swift` — Metal preview: MTKView +
+  AVPlayerItemVideoOutput + displayLink, runtime-compiled shaders, camera
+  transform via uv math, multi-tap motion blur (camera in-shader, cursor as
+  ghost trail), synthetic arrow cursor texture, webcam bubble/webcam-full
+  layouts. Hybrid: SwiftUI owns outer background/padding/corners/shadow.
 - `VibeStudio/Editor/` — editor window (`EditorWindowManager` NSWindow +
-  `EditorView` AVPlayer + scrubber + `CursorOverlayView` Canvas debug overlay),
-  `EditorViewModel` (loads bundle, precomputes raw/smoothed paths, 1/30 s time
-  observer), `DevSmokeTest` (headless load check).
+  `EditorView` preview + transport + `ZoomTrackView` keyframe lane +
+  `InspectorView` + `Backgrounds` gallery), `EditorViewModel` (bundle load,
+  keyframe editing, persistence debounce, render-state computation),
+  `DevSmokeTest` (headless load + auto-zoom summary).
 - `VibeStudio/main.swift` — custom entry: `-open <path> -smokeTest` verifies a
   bundle synchronously and exits before AppKit boots (headless/SSH safe);
   `-open <path>` alone opens the editor. Window restoration is disabled.
