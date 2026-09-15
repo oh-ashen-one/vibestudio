@@ -47,14 +47,26 @@ Guidance for coding agents working in this repo.
   transform via uv math, multi-tap motion blur (camera in-shader, cursor as
   ghost trail), synthetic arrow cursor texture, webcam bubble/webcam-full
   layouts. Hybrid: SwiftUI owns outer background/padding/corners/shadow.
+- `VibeStudio/Render/FrameComposer.swift` — THE single Metal compositor
+  (background/shadow/rounded video quad/webcam/cursor, SDF masks, motion blur).
+  Preview and export both encode through it — they cannot diverge.
+- `VibeStudio/Render/PreviewRenderer.swift` — live driver: AVPlayerItemVideoOutputs,
+  window-attached displayLink, MTKView; delegates all drawing to FrameComposer.
+- `VibeStudio/Export/` — `ProjectAnalysis` (shared bundle→inputs loader),
+  `FrameStateBuilder` (shared per-frame state math, also in ProjectAnalysis.swift),
+  `AspectRetarget` (§3.4.7 keyframe re-targeting, height-basis zoom),
+  `ExportRenderer` (AVAssetReader → composer → AVAssetWriter H.264; compressed
+  audio passthrough; webcam sync via meta host-time offsets; trim ranges).
 - `VibeStudio/Editor/` — editor window (`EditorWindowManager` NSWindow +
-  `EditorView` preview + transport + `ZoomTrackView` keyframe lane +
-  `InspectorView` + `Backgrounds` gallery), `EditorViewModel` (bundle load,
-  keyframe editing, persistence debounce, render-state computation),
+  `EditorView` preview + transport + `TrimRangeView` + `ZoomTrackView` keyframe
+  lane + `InspectorView` + `ExportPanelView` + `Backgrounds` gallery),
+  `EditorViewModel` (bundle load, keyframe editing, persistence, export runner),
   `DevSmokeTest` (headless load + auto-zoom summary).
 - `VibeStudio/main.swift` — custom entry: `-open <path> -smokeTest` verifies a
   bundle synchronously and exits before AppKit boots (headless/SSH safe);
-  `-open <path>` alone opens the editor. Window restoration is disabled.
+  `-open <bundle> -export <out.mp4> [-aspect] [-preset] [-range a,b]` runs a
+  full synchronous export; `-open <path>` alone opens the editor.
+  Window restoration is disabled.
 - `VibeStudio/Capture/` — capture engine:
   - `ScreenRecorder.swift` — SCStream → AVAssetWriter (H.264 + AAC system audio), retina scale, per-input serial queues, drop-on-not-ready.
   - `WebcamRecorder.swift` — AVCaptureSession (camera and/or mic) → webcam.mov; mic-mute / camera-off compensators.

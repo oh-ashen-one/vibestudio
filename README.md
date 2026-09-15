@@ -73,7 +73,11 @@ tccutil reset Accessibility dev.vibestudio.app
 - [x] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
       (code complete; auto-zoom + camera evaluation verified headlessly on the
       fixture, on-screen visual verification pending)
-- [ ] Phase 4 — export (MP4, aspect-ratio re-targeting)
+- [x] Phase 4 — export (MP4, aspect-ratio re-targeting, In/Out trim).
+      Verified: CLI smoke exports of the fixture (16:9 full, 16:9 trimmed
+      5–10s, 9:16) probe-checked with ffprobe and frame-extracted with ffmpeg;
+      preview visually re-verified on a live display after the compositor
+      refactor
 - [ ] Phase 5 — polish (click ripples, keystroke badges, GIF, presets)
 
 ## License
