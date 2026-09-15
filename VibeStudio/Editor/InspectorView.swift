@@ -88,6 +88,7 @@ struct InspectorView: View {
                 Text("Webcam").tag(CameraLayout.webcamFull)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .disabled(!viewModel.hasWebcam)
             if !viewModel.hasWebcam {
                 Text("No webcam track in this project.")
