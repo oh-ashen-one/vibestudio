@@ -25,6 +25,13 @@ struct PauseCompensator: Equatable {
     func adjusted(_ sourceTime: Double) -> Double {
         sourceTime - accumulated
     }
+
+    /// Media-time for DISPLAY (e.g. the pill timer): freezes while paused,
+    /// because the in-progress pause is not yet in `accumulated`.
+    func mediaAdjusted(_ sourceTime: Double) -> Double {
+        guard let pausedAt else { return adjusted(sourceTime) }
+        return pausedAt - accumulated
+    }
 }
 
 /// Thread-safe shared clock in host-clock seconds (CACurrentMediaTime domain,
@@ -67,8 +74,11 @@ final class SharedPauseClock: @unchecked Sendable {
         return compensator.adjusted(hostSeconds)
     }
 
-    /// Seconds since recording start, excluding paused time.
+    /// Seconds since recording start, excluding paused time. Freezes while
+    /// paused (used by the pill timer and event timestamps).
     func mediaTime(_ hostSeconds: Double) -> Double {
-        adjusted(hostSeconds) - startHostSeconds
+        lock.lock()
+        defer { lock.unlock() }
+        return compensator.mediaAdjusted(hostSeconds) - startHostSeconds
     }
 }
