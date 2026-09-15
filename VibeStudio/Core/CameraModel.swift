@@ -8,9 +8,16 @@ struct CameraState: Equatable {
     var zoom: Double
 
     /// Source rect in video pixels currently visible, clamped to the video.
-    func sourceRect(videoSize: CGSize) -> CGRect {
-        let size = CGSize(width: videoSize.width / max(zoom, 0.01),
-                          height: videoSize.height / max(zoom, 0.01))
+    /// Zoom semantics: the window covers 1/zoom of the frame HEIGHT; the
+    /// window aspect defaults to the source aspect (identical to the old
+    /// behavior) and is overridden for aspect-ratio re-targeted exports.
+    func sourceRect(videoSize: CGSize, aspect: CGFloat? = nil) -> CGRect {
+        let windowAspect = aspect ?? (videoSize.height > 0 ? videoSize.width / videoSize.height : 1)
+        var height = videoSize.height / max(zoom, 0.01)
+        height = min(height, videoSize.height)
+        let width = min(height * windowAspect, videoSize.width)
+        height = min(width / windowAspect, videoSize.height)
+        let size = CGSize(width: width, height: height)
         var origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
         origin.x = min(max(origin.x, 0), max(videoSize.width - size.width, 0))
         origin.y = min(max(origin.y, 0), max(videoSize.height - size.height, 0))
