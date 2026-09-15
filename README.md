@@ -66,25 +66,39 @@ tccutil reset Accessibility dev.vibestudio.app
 - [x] Phase 0 — project scaffold, headless build + tests
 - [x] Phase 1 — recorder: floating pill (display/window/area source, camera,
       mic, settings), ScreenCaptureKit capture, cursor/click/keystroke events
-      (code complete, live recording verification pending)
-- [x] Phase 2 — project model + player (code complete; editor window
-      appearance/playback verified headlessly via fixture + smoke test,
-      interactive visual verification pending)
-- [x] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
-      (code complete; auto-zoom + camera evaluation verified headlessly on the
-      fixture, on-screen visual verification pending)
+      (code complete; live recording verification pending macOS permission
+      grant on the dev machine)
+- [x] Phase 2 — project model + player. Verified on a live display: editor
+      opens the fixture bundle, video plays, raw+smoothed cursor paths render
+      over the correct pixels, scrubber seeks
+- [x] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts.
+      Verified on a live display: 7 auto keyframes on the fixture with 300ms
+      click anticipation, Metal preview (zoomed camera, synthetic cursor,
+      motion blur, rounded frame + shadow), webcam bubble/full layouts,
+      background gallery
 - [x] Phase 4 — export (MP4, aspect-ratio re-targeting, In/Out trim).
-      Verified: CLI smoke exports of the fixture (16:9 full, 16:9 trimmed
-      5–10s, 9:16) probe-checked with ffprobe and frame-extracted with ffmpeg;
-      preview visually re-verified on a live display after the compositor
-      refactor
+      Verified: CLI exports of the fixture (16:9 full, 16:9 trimmed 5–10s,
+      9:16) probe-checked with ffprobe and frame-extracted; 9:16 follows the
+      action (not a center crop); preview and export share one Metal
+      compositor so framing matches
 - [x] Phase 5 — polish: click ripples, keystroke badges, GIF export, manual
       zoom focus-rect editing, hide-static-cursor, loop cursor end, presets
-      save/share. Verified: live preview screenshots (ripple ring, upright
-      ⌘ badges, focus-rect editor), CLI export frames (ripple + badge in
-      video), fixture.gif (852x480, 900 frames, frame-inspected), hide-static
-      and loop-end exports frame-checked. Speed-up segments deferred
-      (see DECISIONS.md)
+      save/share. Verified: export frames show ripple at the click pixel,
+      ⌘ badges, cursor trail; fixture.gif (852x480, 900 frames)
+      frame-inspected. Speed-up segments deferred (see DECISIONS.md)
+
+## Verification status (acceptance criteria)
+
+- [x] Fresh clone → `./scripts/build.sh` builds in seconds; `./scripts/test.sh`
+      green (105 tests)
+- [x] Zero network calls / accounts / telemetry in app sources; MIT licensed
+- [x] Auto-zoom + smooth cursor + motion blur + styled frame visible in
+      exports; every auto-zoom editable on the timeline with live preview
+- [x] 9:16 re-targeting keeps the action framed
+- [ ] End-to-end recording on this machine (pending macOS Screen Recording /
+      Input Monitoring permission grant for the ad-hoc-signed dev build)
+- [ ] Side-by-side comparison GIFs against a real Screen Studio export
+      (planned once the permission above is granted)
 
 ## License
 
