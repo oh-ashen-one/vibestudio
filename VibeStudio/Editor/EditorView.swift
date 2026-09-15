@@ -1,6 +1,12 @@
 import AVKit
 import SwiftUI
 
+// Force a direct symbol reference to AVKit's AVPlayerView so the linker keeps
+// the AVKit framework: without it, SwiftUI's VideoPlayer crashes at runtime
+// ("failed to demangle superclass of VideoPlayerView from mangled name
+// 'So12AVPlayerViewC'") because its ObjC superclass was dead-stripped.
+private let _forceAVKitLinkage: AnyClass = AVPlayerView.self
+
 struct EditorView: View {
     @ObservedObject var viewModel: EditorViewModel
 
