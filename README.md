@@ -47,6 +47,19 @@ tccutil reset Accessibility dev.vibestudio.app
 - `scripts/build.sh` — headless build → `.build/Build/Products/Debug/VibeStudio.app`
 - `scripts/run.sh` — build + launch
 - `scripts/test.sh` — build + run unit tests
+- `scripts/make_fixture.sh` — generate a deterministic fake recording
+  (`Fixtures/sample-recording/`, gitignored) for development without
+  screen-recording permission
+
+### Inspecting a recording without permissions
+
+```bash
+./scripts/make_fixture.sh            # once, regenerable any time
+.build/Build/Products/Debug/VibeStudio.app/Contents/MacOS/VibeStudio \
+  -open "$PWD/Fixtures/sample-recording" -smokeTest   # headless load check
+.build/Build/Products/Debug/VibeStudio.app/Contents/MacOS/VibeStudio \
+  -open "$PWD/Fixtures/sample-recording.vibestudio"   # open editor window
+```
 
 ## Roadmap
 
@@ -54,7 +67,9 @@ tccutil reset Accessibility dev.vibestudio.app
 - [x] Phase 1 — recorder: floating pill (display/window/area source, camera,
       mic, settings), ScreenCaptureKit capture, cursor/click/keystroke events
       (code complete, live recording verification pending)
-- [ ] Phase 2 — project model + player
+- [x] Phase 2 — project model + player (code complete; editor window
+      appearance/playback verified headlessly via fixture + smoke test,
+      interactive visual verification pending)
 - [ ] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
 - [ ] Phase 4 — export (MP4, aspect-ratio re-targeting)
 - [ ] Phase 5 — polish (click ripples, keystroke badges, GIF, presets)
