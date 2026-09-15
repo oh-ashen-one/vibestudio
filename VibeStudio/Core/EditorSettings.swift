@@ -60,4 +60,8 @@ struct EditorSettings: Codable, Equatable {
     /// Export trim range in seconds; nil = unbounded (recording start/end).
     var trimStart: Double?
     var trimEnd: Double?
+    /// Fade the cursor out when it stays still (nil = off).
+    var hideStaticCursor: Bool?
+    /// Append a return-to-start segment so recordings loop seamlessly.
+    var loopCursorEnd: Bool?
 }

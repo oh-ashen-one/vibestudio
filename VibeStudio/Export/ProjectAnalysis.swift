@@ -75,21 +75,45 @@ enum FrameStateBuilder {
                      videoSize: CGSize,
                      settings: EditorSettings,
                      frameDT: Double,
-                     sourceAspect: CGFloat? = nil) -> CompositorFrameState {
+                     sourceAspect: CGFloat? = nil,
+                     clicks: [CursorPoint] = [],
+                     keyBadges: [(t: Double, text: String)] = [],
+                     duration: Double = 0) -> CompositorFrameState {
         var state = CompositorFrameState()
         guard videoSize.width > 0 else { return state }
-        let camera = cameraModel.state(at: t, videoSize: videoSize)
-        let src = camera.sourceRect(videoSize: videoSize, aspect: sourceAspect)
-        state.screenUVRect = CGRect(x: src.minX / videoSize.width, y: src.minY / videoSize.height,
-                                    width: src.width / videoSize.width, height: src.height / videoSize.height)
         state.layout = settings.cameraLayout
         state.paddingFraction = settings.padding
         state.cornerRadiusFraction = settings.cornerRadius
         state.shadowEnabled = settings.shadowEnabled
         state.background = settings.background
 
+        // Loop cursor end: past the recording duration, interpolate camera to
+        // full frame and cursor to its start position.
+        var effectiveT = t
+        var loopProgress: Double?
+        if settings.loopCursorEnd == true, let p = LoopCursorEnd.progress(at: t, duration: duration) {
+            loopProgress = LoopCursorEnd.eased(p)
+            effectiveT = duration
+        }
+
+        var camera = cameraModel.state(at: effectiveT, videoSize: videoSize)
+        var cursorOverride: CGPoint?
+        if let loopProgress, let first = smoothedPath.first, let last = smoothedPath.last {
+            let full = CameraState(center: CGPoint(x: videoSize.width / 2, y: videoSize.height / 2), zoom: 1)
+            camera = CameraState(
+                center: CGPoint(x: camera.center.x + (full.center.x - camera.center.x) * loopProgress,
+                                y: camera.center.y + (full.center.y - camera.center.y) * loopProgress),
+                zoom: exp(log(max(camera.zoom, 0.01)) + (log(max(full.zoom, 0.01)) - log(max(camera.zoom, 0.01))) * loopProgress))
+            cursorOverride = CGPoint(x: last.x + (first.x - last.x) * loopProgress,
+                                     y: last.y + (first.y - last.y) * loopProgress)
+        }
+
+        let src = camera.sourceRect(videoSize: videoSize, aspect: sourceAspect)
+        state.screenUVRect = CGRect(x: src.minX / videoSize.width, y: src.minY / videoSize.height,
+                                    width: src.width / videoSize.width, height: src.height / videoSize.height)
+
         let shutter = settings.motionBlurStrength / 60.0
-        let previous = cameraModel.state(at: max(0, t - frameDT), videoSize: videoSize)
+        let previous = cameraModel.state(at: max(0, effectiveT - frameDT), videoSize: videoSize)
         let cameraVelocity = CGPoint(x: (camera.center.x - previous.center.x) / frameDT,
                                      y: (camera.center.y - previous.center.y) / frameDT)
         if hypot(cameraVelocity.x, cameraVelocity.y) > 1 {
@@ -98,15 +122,20 @@ enum FrameStateBuilder {
                                           height: cameraVelocity.y / videoSize.height * shutter / CGFloat(state.cameraTaps))
         }
 
-        if let position = AutoZoomEngine.cursorPosition(at: t, in: smoothedPath) {
+        let cursorVideoPosition: CGPoint? = cursorOverride ?? AutoZoomEngine.cursorPosition(at: effectiveT, in: smoothedPath)
+        if let position = cursorVideoPosition {
             let fx = (position.x - src.minX) / src.width
             let fy = (position.y - src.minY) / src.height
             state.cursorPosition = CGPoint(x: fx, y: fy)
             state.cursorHeightFraction = 0.045 * settings.cursorSize
 
+            if settings.hideStaticCursor == true, loopProgress == nil {
+                state.cursorAlpha = Float(CursorVisibility.alpha(at: effectiveT, path: smoothedPath))
+            }
+
             let taps = 1 + Int(settings.motionBlurStrength * 11)
-            if taps > 1,
-               let previousPosition = AutoZoomEngine.cursorPosition(at: max(0, t - frameDT), in: smoothedPath) {
+            if taps > 1, loopProgress == nil,
+               let previousPosition = AutoZoomEngine.cursorPosition(at: max(0, effectiveT - frameDT), in: smoothedPath) {
                 let vx = (position.x - previousPosition.x) / frameDT / src.width
                 let vy = (position.y - previousPosition.y) / frameDT / src.height
                 if hypot(vx, vy) > 0.05 {
@@ -116,6 +145,23 @@ enum FrameStateBuilder {
                     } + [.zero]
                 }
             }
+        }
+
+        // Click ripples at active click positions (video-quad fractions).
+        if loopProgress == nil {
+            for click in clicks {
+                guard let ripple = ClickRipple.state(age: t - click.t) else { continue }
+                state.ripples.append(RippleDraw(
+                    center: CGPoint(x: (click.x - src.minX) / src.width,
+                                    y: (click.y - src.minY) / src.height),
+                    progress: ripple.progress,
+                    alpha: ripple.alpha))
+            }
+        }
+
+        // Keystroke badges.
+        state.badges = KeystrokeBadges.active(at: t, events: keyBadges).map {
+            BadgeDraw(text: $0.text, alpha: $0.alpha)
         }
         return state
     }

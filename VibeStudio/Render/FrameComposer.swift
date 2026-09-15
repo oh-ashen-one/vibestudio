@@ -12,11 +12,25 @@ struct CompositorFrameState {
     var cursorPosition = CGPoint(x: 0.5, y: 0.5)  // video-quad fraction, y down
     var cursorHeightFraction = 0.045
     var cursorBlurOffsets: [CGSize] = [.zero]     // video-quad fraction, head last
+    var cursorAlpha: Float = 1
+    var ripples: [RippleDraw] = []
+    var badges: [BadgeDraw] = []
     var layout: CameraLayout = .screenOnly
     var paddingFraction = 0.08        // of canvas width
     var cornerRadiusFraction = 0.04   // of video-quad height
     var shadowEnabled = true
     var background: BackgroundSpec = .preset("midnight")
+}
+
+struct RippleDraw {
+    var center = CGPoint.zero   // video-quad fraction, y down
+    var progress = 0.0          // 0...1 ring expansion
+    var alpha = 0.0
+}
+
+struct BadgeDraw {
+    var text = ""
+    var alpha = 0.0
 }
 
 /// The single Metal compositor: background (gradient/wallpaper) → drop shadow
@@ -31,16 +45,21 @@ final class FrameComposer {
     static let shadowFeatherPx: Float = 26
     static let shadowOffsetPx: Float = 14
     static let shadowAlpha: Float = 0.5
+    static let rippleMaxFraction: CGFloat = 0.11     // of video-quad height
+    static let badgeHeightFraction: CGFloat = 0.085  // of video-quad height
+    static let badgeBottomMarginFraction: CGFloat = 0.04
 
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
     private let texturedPipeline: MTLRenderPipelineState
     private let gradientPipeline: MTLRenderPipelineState
     private let shadowPipeline: MTLRenderPipelineState
+    private let ripplePipeline: MTLRenderPipelineState
     private let textureCache: CVMetalTextureCache
     private let cursorTexture: MTLTexture?
     private var cursorAspect: CGFloat = 1
     private var wallpaperTextures: [String: MTLTexture] = [:]
+    private var badgeTextures: [String: (texture: MTLTexture, aspect: CGFloat)] = [:]
 
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -71,6 +90,7 @@ final class FrameComposer {
             texturedPipeline = try pipeline("texturedFragment")
             gradientPipeline = try pipeline("gradientFragment")
             shadowPipeline = try pipeline("shadowFragment")
+            ripplePipeline = try pipeline("rippleFragment")
         } catch {
             FileHandle.standardError.write(Data(("[VibeStudio/composer] pipeline failed: \(error)\n").utf8))
             return nil
@@ -168,12 +188,30 @@ final class FrameComposer {
             }
         }
 
-        // 6. Synthetic cursor (clipped to the video quad's rounded corners)
-        if let cursorTexture, state.layout != .webcamFull {
+        // 6. Click ripples (clipped to the video quad like the cursor)
+        for ripple in state.ripples where ripple.alpha > 0.001 {
+            let size = Self.rippleMaxFraction * quad.height
+            let centerX = quad.minX + ripple.center.x * quad.width
+            let centerY = quad.maxY - ripple.center.y * quad.height
+            let dst = CGRect(x: centerX - size / 2, y: centerY - size / 2,
+                             width: size, height: size)
+            var uniforms = DrawUniforms(dst: dst, uv: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                        alpha: Float(ripple.alpha),
+                                        quadSizePx: quadSizePx, radiusPx: radiusPx,
+                                        roundedMask: true, container: quad)
+            uniforms.progress = Float(ripple.progress)
+            encoder.setRenderPipelineState(ripplePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<DrawUniforms>.size, index: 0)
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<DrawUniforms>.size, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+
+        // 7. Synthetic cursor (clipped to the video quad's rounded corners)
+        if let cursorTexture, state.layout != .webcamFull, state.cursorAlpha > 0.001 {
             let taps = state.cursorBlurOffsets.count
             for (index, offset) in state.cursorBlurOffsets.enumerated() {
                 let isHead = index == taps - 1
-                let alpha: Float = isHead ? 1 : Float(0.35 * Double(index + 1) / Double(taps))
+                let alpha: Float = (isHead ? 1 : Float(0.35 * Double(index + 1) / Double(taps))) * state.cursorAlpha
                 let center = CGPoint(x: state.cursorPosition.x + offset.width,
                                      y: state.cursorPosition.y + offset.height)
                 let dst = cursorRectNDC(center: center,
@@ -182,9 +220,45 @@ final class FrameComposer {
                 encode(encoder, texture: cursorTexture, pipeline: texturedPipeline,
                        dst: dst, uv: CGRect(x: 0, y: 0, width: 1, height: 1),
                        blurStep: .zero, alpha: alpha, circleMask: false, taps: 1,
-                       quadSizePx: quadSizePx, radiusPx: radiusPx, roundedMask: true)
+                       quadSizePx: quadSizePx, radiusPx: radiusPx, roundedMask: true,
+                       container: quad)
             }
         }
+
+        // 8. Keystroke badges (bottom-center of the video quad)
+        let visibleBadges = state.badges.filter { $0.alpha > 0.001 }
+        if !visibleBadges.isEmpty {
+            let heightNDC = Self.badgeHeightFraction * quad.height
+            let spacing = heightNDC * 0.35
+            // NDC scales uniformly with the quad, so width = height * textureAspect.
+            var layouts: [(texture: MTLTexture, width: CGFloat, alpha: Float)] = []
+            var totalWidth = spacing * CGFloat(visibleBadges.count - 1)
+            for badge in visibleBadges {
+                guard let cached = badgeTexture(for: badge.text) else { continue }
+                let widthNDC = heightNDC * cached.aspect
+                layouts.append((cached.texture, widthNDC, Float(badge.alpha)))
+                totalWidth += widthNDC
+            }
+            var x = quad.minX + (quad.width - totalWidth) / 2
+            let y = quad.minY + Self.badgeBottomMarginFraction * quad.height
+            for layout in layouts {
+                let dst = CGRect(x: x, y: y, width: layout.width, height: heightNDC)
+                x += layout.width + spacing
+                encode(encoder, texture: layout.texture, pipeline: texturedPipeline,
+                       dst: dst, uv: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       blurStep: .zero, alpha: layout.alpha, circleMask: false, taps: 1,
+                       quadSizePx: quadSizePx, radiusPx: radiusPx, roundedMask: true,
+                       container: quad)
+            }
+        }
+    }
+
+    private func badgeTexture(for text: String) -> (texture: MTLTexture, aspect: CGFloat)? {
+        if let cached = badgeTextures[text] { return cached }
+        guard let texture = BadgeTextureFactory.make(text: text, device: device) else { return nil }
+        let aspect = CGFloat(texture.width) / CGFloat(texture.height)
+        badgeTextures[text] = (texture, aspect)
+        return (texture, aspect)
     }
 
     // MARK: - Pieces
@@ -243,12 +317,15 @@ final class FrameComposer {
         var quadSizePx: SIMD2<Float> = .zero
         var cornerRadiusPx: Float = 0
         var roundedMask: Float = 0
+        var containerRect: SIMD4<Float> = .zero
+        var progress: Float = 0
 
         init(dst: CGRect, uv: CGRect,
              blurStep: CGSize = .zero, alpha: Float = 1,
              circleMask: Bool = false, taps: Int = 1,
              colorA: SIMD4<Float> = .zero, colorB: SIMD4<Float> = .zero,
-             quadSizePx: CGSize = .zero, radiusPx: Float = 0, roundedMask: Bool = false) {
+             quadSizePx: CGSize = .zero, radiusPx: Float = 0, roundedMask: Bool = false,
+             container: CGRect? = nil) {
             dstRect = SIMD4(Float(dst.origin.x), Float(dst.origin.y), Float(dst.width), Float(dst.height))
             uvRect = SIMD4(Float(uv.origin.x), Float(uv.origin.y), Float(uv.width), Float(uv.height))
             self.blurStep = SIMD2(Float(blurStep.width), Float(blurStep.height))
@@ -260,6 +337,8 @@ final class FrameComposer {
             self.quadSizePx = SIMD2(Float(quadSizePx.width), Float(quadSizePx.height))
             cornerRadiusPx = radiusPx
             self.roundedMask = roundedMask ? 1 : 0
+            let box = container ?? dst
+            containerRect = SIMD4(Float(box.origin.x), Float(box.origin.y), Float(box.width), Float(box.height))
         }
     }
 
@@ -269,12 +348,13 @@ final class FrameComposer {
                         dst: CGRect, uv: CGRect,
                         blurStep: CGSize, alpha: Float,
                         circleMask: Bool, taps: Int,
-                        quadSizePx: CGSize, radiusPx: Float, roundedMask: Bool) {
+                        quadSizePx: CGSize, radiusPx: Float, roundedMask: Bool,
+                        container: CGRect? = nil) {
         var uniforms = DrawUniforms(dst: dst, uv: uv,
                                     blurStep: blurStep, alpha: alpha,
                                     circleMask: circleMask, taps: taps,
                                     quadSizePx: quadSizePx, radiusPx: radiusPx,
-                                    roundedMask: roundedMask)
+                                    roundedMask: roundedMask, container: container)
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<DrawUniforms>.size, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<DrawUniforms>.size, index: 0)
@@ -365,22 +445,27 @@ final class FrameComposer {
         float2 quadSizePx;
         float cornerRadiusPx;
         float roundedMask;
+        float4 containerRect;
+        float progress;
     };
 
     struct VSOut {
         float4 position [[position]];
         float2 uv;
         float2 localUV;
+        float2 containerUV;
     };
 
     vertex VSOut composerVertex(uint vid [[vertex_id]], constant DrawUniforms &u [[buffer(0)]]) {
         float2 corners[4] = {{0,0},{1,0},{0,1},{1,1}};
         float2 c = corners[vid];
         VSOut out;
-        out.position = float4(u.dstRect.x + c.x * u.dstRect.z,
-                              u.dstRect.y + c.y * u.dstRect.w, 0, 1);
+        float2 ndc = float2(u.dstRect.x + c.x * u.dstRect.z,
+                            u.dstRect.y + c.y * u.dstRect.w);
+        out.position = float4(ndc, 0, 1);
         out.uv = u.uvRect.xy + c * u.uvRect.zw;
         out.localUV = c;
+        out.containerUV = (ndc - u.containerRect.xy) / u.containerRect.zw;
         return out;
     }
 
@@ -402,7 +487,7 @@ final class FrameComposer {
             mask *= smoothstep(0.5, 0.47, d);
         }
         if (u.roundedMask > 0.5 && u.quadSizePx.x > 0.0) {
-            mask *= roundedMaskAlpha(in.localUV, u.quadSizePx, u.cornerRadiusPx);
+            mask *= roundedMaskAlpha(in.containerUV, u.quadSizePx, u.cornerRadiusPx);
         }
         float4 sum = float4(0);
         int taps = max(u.taps, 1);
@@ -412,6 +497,19 @@ final class FrameComposer {
         }
         float4 color = sum / float(taps);
         return float4(color.rgb * u.alpha * mask, color.a * u.alpha * mask);
+    }
+
+    fragment float4 rippleFragment(VSOut in [[stage_in]],
+                                   constant DrawUniforms &u [[buffer(0)]]) {
+        float r = length(in.localUV - 0.5) * 2.0;
+        float ringR = mix(0.15, 0.95, u.progress);
+        float ring = smoothstep(0.16, 0.02, abs(r - ringR));
+        float dot = smoothstep(0.22, 0.0, r) * (1.0 - u.progress);
+        float a = (ring + dot * 0.5) * u.alpha;
+        if (u.roundedMask > 0.5 && u.quadSizePx.x > 0.0) {
+            a *= roundedMaskAlpha(in.containerUV, u.quadSizePx, u.cornerRadiusPx);
+        }
+        return float4(float3(1.0) * a, a);
     }
 
     fragment float4 gradientFragment(VSOut in [[stage_in]],
@@ -430,4 +528,65 @@ final class FrameComposer {
         return float4(float3(0.0), 1.0) * alpha;
     }
     """
+}
+
+/// Renders keystroke badge pills (rounded dark background + shortcut text)
+/// into cached BGRA textures. Drawn with the same premultiplied-bitmap
+/// convention as the cursor texture.
+enum BadgeTextureFactory {
+    static let height = 64
+
+    static func make(text: String, device: MTLDevice) -> MTLTexture? {
+        let font = NSFont.boldSystemFont(ofSize: 34)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white,
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+        let paddingX: CGFloat = 22
+        let width = Int((textSize.width + paddingX * 2).rounded(.up))
+        let height = Self.height
+        let bytesPerRow = width * 4
+        var bytes = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(data: &bytes, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                      space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                        | CGImageByteOrderInfo.order32Little.rawValue) else { return nil }
+        let pill = CGPath(roundedRect: CGRect(x: 1, y: 1, width: CGFloat(width) - 2, height: CGFloat(height) - 2),
+                          cornerWidth: 16, cornerHeight: 16, transform: nil)
+        context.addPath(pill)
+        context.setFillColor(CGColor(red: 0.08, green: 0.08, blue: 0.1, alpha: 0.85))
+        context.fillPath()
+        context.addPath(pill)
+        context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.25))
+        context.setLineWidth(1.5)
+        context.strokePath()
+        let textRect = CGRect(x: paddingX, y: (CGFloat(height) - textSize.height) / 2,
+                              width: textSize.width, height: textSize.height)
+        // NSString drawing needs a live NSGraphicsContext; it lands inverted
+        // in this y-up bitmap, so the rows are flipped explicitly below.
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        (text as NSString).draw(in: textRect, withAttributes: attributes)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // The compositor samples texture row 0 as the visual top; flip rows.
+        var flipped = [UInt8](repeating: 0, count: bytes.count)
+        for row in 0..<height {
+            let src = row * bytesPerRow
+            let dst = (height - 1 - row) * bytesPerRow
+            flipped[dst..<(dst + bytesPerRow)] = bytes[src..<(src + bytesPerRow)]
+        }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                                  width: width, height: height,
+                                                                  mipmapped: false)
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height),
+                        mipmapLevel: 0, withBytes: flipped, bytesPerRow: bytesPerRow)
+        return texture
+    }
 }
