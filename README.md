@@ -66,8 +66,8 @@ tccutil reset Accessibility dev.vibestudio.app
 - [x] Phase 0 — project scaffold, headless build + tests
 - [x] Phase 1 — recorder: floating pill (display/window/area source, camera,
       mic, settings), ScreenCaptureKit capture, cursor/click/keystroke events
-      (code complete; live recording verification pending macOS permission
-      grant on the dev machine)
+      (verified live on-machine: pill-driven 30s+ recording with pause/resume,
+      events.json within [0, duration], pill self-excluded from capture)
 - [x] Phase 2 — project model + player. Verified on a live display: editor
       opens the fixture bundle, video plays, raw+smoothed cursor paths render
       over the correct pixels, scrubber seeks

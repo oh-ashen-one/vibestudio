@@ -94,6 +94,14 @@ Guidance for coding agents working in this repo.
 
 - Verify by running, not by compiling: after user-visible changes, launch the
   app and exercise the feature.
+- **Driving the app headlessly:** synthetic CGEventPost mouse CLICKS do not
+  reach the pill NSPanel. What works: (a) post the ⌘⇧2 hotkey via CGEventPost
+  to toggle recording; (b) Accessibility clicks —
+  `osascript -e 'tell application "System Events" to tell process "VibeStudio" to click button N of group 1 of window 1'`
+  (enumerate with `get entire contents of window 1`; buttons expose their help
+  texts like "Pause" / "Stop and save (⌘⇧2)"). Always
+  `rm -rf ~/Library/"Saved Application State"/dev.vibestudio.app.savedState`
+  before relaunching to avoid the crash-recovery modal.
 - Tuneable constants and visual decisions → log them in `DECISIONS.md` with
   the reason.
 - Commit per feature (conventional commits). Push in the same session —
