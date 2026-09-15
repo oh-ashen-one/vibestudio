@@ -20,8 +20,23 @@ Guidance for coding agents working in this repo.
 
 ## Architecture map (grows per phase)
 
-- `VibeStudio/VibeStudioApp.swift` — app entry point.
-- Capture: ScreenCaptureKit (`SCStream`), retina scale, 60 fps.
+- `VibeStudio/VibeStudioApp.swift` — app entry; accessory app, creates the pill + global hotkey.
+- `VibeStudio/Core/` — pure, unit-tested logic:
+  - `CoordinateMapper.swift` — CG global ↔ AppKit ↔ ScreenCaptureKit pixel conversions, `CaptureMapping` event→video projection, resolution capping.
+  - `PauseCompensator.swift` — pause-gap timestamp math + thread-safe `SharedPauseClock` (host-clock domain).
+  - `EventTypes.swift` — `events.json` / `recording-meta.json` Codable schema (spec §3.1).
+  - `RecordingSettings.swift` — settings persisted as JSON in UserDefaults.
+  - `OutputLocation.swift` — `~/Movies/VibeStudio/<timestamp>/` session folders.
+- `VibeStudio/Capture/` — capture engine:
+  - `ScreenRecorder.swift` — SCStream → AVAssetWriter (H.264 + AAC system audio), retina scale, per-input serial queues, drop-on-not-ready.
+  - `WebcamRecorder.swift` — AVCaptureSession (camera and/or mic) → webcam.mov; mic-mute / camera-off compensators.
+  - `EventLogger.swift` — CGEvent tap on a dedicated run-loop thread → in-memory events → events.json; NSWorkspace + AX frontmost-window events.
+  - `MicLevelMeter.swift` — AVAudioEngine input tap, 10 Hz level for the setup pill.
+  - `DeviceCatalog.swift`, `DesktopIconHider.swift`.
+- `VibeStudio/Session/RecordingSession.swift` — orchestrator: source selection (display/window/area), countdown, hide-desktop-icons, pause/resume/stop/discard, meta writing.
+- `VibeStudio/UI/` — pill panel (`PillWindowController` + `PillView`), window/area picker overlays, countdown overlay, camera preview, Carbon global hotkey (⌘⇧2).
+- Capture: ScreenCaptureKit (`SCStream`), retina scale, 60 fps; the pill excludes
+  itself via `SCContentFilter(display:excludingWindows:)` with our own SCWindows.
 - Events: `CGEvent.tapCreate` global tap (cursor/click/key/scroll) logged with
   timestamps → `events.json` next to the recording.
 - Render: Metal compositor (preview + export share the same code path).

@@ -51,8 +51,9 @@ tccutil reset Accessibility dev.vibestudio.app
 ## Roadmap
 
 - [x] Phase 0 — project scaffold, headless build + tests
-- [ ] Phase 1 — recorder: floating pill (display/window/area source, camera,
+- [x] Phase 1 — recorder: floating pill (display/window/area source, camera,
       mic, settings), ScreenCaptureKit capture, cursor/click/keystroke events
+      (code complete, live recording verification pending)
 - [ ] Phase 2 — project model + player
 - [ ] Phase 3 — auto-zoom, smooth cursor, styled frame, camera layouts
 - [ ] Phase 4 — export (MP4, aspect-ratio re-targeting)
