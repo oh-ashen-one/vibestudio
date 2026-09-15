@@ -67,11 +67,17 @@ enum ExportPreset: String, Codable, CaseIterable {
     }
 }
 
+enum ExportFormat: String, Codable, CaseIterable {
+    case mp4
+    case gif
+}
+
 struct ExportConfiguration {
     var bundleURL: URL
     var outputURL: URL
     var preset: ExportPreset = .sourceNative
     var aspect: ExportAspect = .a16x9
+    var format: ExportFormat = .mp4
     var trimRange: ClosedRange<Double>?
 }
 
@@ -122,6 +128,12 @@ final class ExportRenderer: @unchecked Sendable {
     }
 
     /// Output frame times in source-media seconds for a trim range.
+    /// GIF canvas: capped at 480px height per §3.5 social presets.
+    static func gifCanvasSize(aspect: ExportAspect) -> CGSize {
+        func even(_ value: CGFloat) -> Int { Int(value.rounded()) - (Int(value.rounded()) % 2) }
+        return CGSize(width: even(480 * aspect.ratio), height: 480)
+    }
+
     static func frameTimes(trimStart: Double, trimEnd: Double, fps: Int) -> [Double] {
         let count = max(Int(((trimEnd - trimStart) * Double(fps)).rounded(.toNearestOrAwayFromZero)), 1)
         return (0..<count).map { trimStart + Double($0) / Double(fps) }
@@ -134,10 +146,13 @@ final class ExportRenderer: @unchecked Sendable {
         let analysis = try await ProjectAnalysis.load(bundleURL: config.bundleURL)
         let settings = analysis.resolvedSettings
         let sourceFPS = Int(analysis.frameRate.rounded())
-        let fps = config.preset.frameRate ?? sourceFPS
-        let outputSize = config.preset.outputSize(aspect: config.aspect,
-                                                  sourceSize: analysis.videoSize,
-                                                  sourceFPS: sourceFPS)
+        let isGIF = config.format == .gif
+        let fps = isGIF ? min(30, sourceFPS) : (config.preset.frameRate ?? sourceFPS)
+        let outputSize = isGIF
+            ? gifCanvasSize(aspect: config.aspect)
+            : config.preset.outputSize(aspect: config.aspect,
+                                       sourceSize: analysis.videoSize,
+                                       sourceFPS: sourceFPS)
 
         let keyframes = AspectRetarget.keyframes(analysis.resolvedKeyframes,
                                                  sourceSize: analysis.videoSize,
@@ -146,8 +161,17 @@ final class ExportRenderer: @unchecked Sendable {
         let smoothed = analysis.smoothedPath(preset: settings.smoothnessPreset)
         let frameDT = 1.0 / Double(fps)
         let trimStart = max(config.trimRange?.lowerBound ?? 0, 0)
-        let trimEnd = min(config.trimRange?.upperBound ?? analysis.duration, analysis.duration)
+        var trimEnd = min(config.trimRange?.upperBound ?? analysis.duration, analysis.duration)
+        // Loop cursor end appends a synthetic return-to-start segment.
+        if settings.loopCursorEnd == true {
+            trimEnd += LoopCursorEnd.loopSeconds
+        }
         let times = frameTimes(trimStart: trimStart, trimEnd: trimEnd, fps: fps)
+        let keyBadges: [(t: Double, text: String)] = analysis.project.events.compactMap { event in
+            guard event.kind == .key else { return nil }
+            return KeystrokeBadges.badgeText(modifiers: event.modifiers, key: event.key)
+                .map { (event.t, $0) }
+        }
 
         // Readers
         let screenAsset = AVAsset(url: analysis.project.recordingURL)
@@ -164,12 +188,74 @@ final class ExportRenderer: @unchecked Sendable {
             }
         }
 
-        let audioTrack = try await screenAsset.loadTracks(withMediaType: .audio).first
+        let audioTrack = isGIF ? nil : try await screenAsset.loadTracks(withMediaType: .audio).first
 
-        // Writer
         if FileManager.default.fileExists(atPath: config.outputURL.path) {
             try FileManager.default.removeItem(at: config.outputURL)
         }
+
+        // Shared per-frame render: readers -> FrameStateBuilder -> composer.
+        func renderFrame(into pixelBuffer: CVPixelBuffer, at t: Double) async {
+            var screenTexture: MTLTexture?
+            var screenSource: CVMetalTexture?
+            if let frame = screenReader.frame(at: t),
+               let wrapped = composer.texture(from: frame) {
+                screenSource = wrapped.source
+                screenTexture = wrapped.texture
+            }
+            var webcamTexture: MTLTexture?
+            var webcamSource: CVMetalTexture?
+            if let webcamReader,
+               let frame = webcamReader.frame(at: webcamMediaTime(forScreenTime: t,
+                                                                  screenFirstHostSeconds: analysis.project.meta.screenFirstHostSeconds,
+                                                                  webcamFirstHostSeconds: analysis.project.meta.webcamFirstHostSeconds)),
+               let wrapped = composer.texture(from: frame) {
+                webcamSource = wrapped.source
+                webcamTexture = wrapped.texture
+            }
+            let state = FrameStateBuilder.make(t: t,
+                                               cameraModel: cameraModel,
+                                               smoothedPath: smoothed,
+                                               videoSize: analysis.videoSize,
+                                               settings: settings,
+                                               frameDT: frameDT,
+                                               sourceAspect: config.aspect.ratio,
+                                               clicks: analysis.clicks,
+                                               keyBadges: keyBadges,
+                                               duration: analysis.duration)
+            guard let target = composer.texture(from: pixelBuffer) else { return }
+            let descriptor = MTLRenderPassDescriptor()
+            descriptor.colorAttachments[0].texture = target.texture
+            descriptor.colorAttachments[0].loadAction = .clear
+            descriptor.colorAttachments[0].storeAction = .store
+            descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            if let buffer = composer.commandQueue.makeCommandBuffer(),
+               let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) {
+                composer.encodeFrame(encoder: encoder,
+                                     screen: screenTexture,
+                                     webcam: webcamTexture,
+                                     state: state,
+                                     outputSize: outputSize)
+                encoder.endEncoding()
+                buffer.commit()
+                await buffer.completed()
+            }
+            _ = screenSource
+            _ = webcamSource
+            _ = target
+        }
+
+        if isGIF {
+            return try await runGIF(config: config,
+                                    times: times,
+                                    fps: fps,
+                                    outputSize: outputSize,
+                                    progress: progress,
+                                    cancel: cancel,
+                                    renderFrame: renderFrame)
+        }
+
+        // MARK: MP4 writer
         let writer = try AVAssetWriter(url: config.outputURL, fileType: .mp4)
         let bitrate = Int(Double(outputSize.width * outputSize.height) * Double(fps) * videoBitrateFactor)
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -247,52 +333,7 @@ final class ExportRenderer: @unchecked Sendable {
             }
             guard let pool = adaptor.pixelBufferPool,
                   let pixelBuffer = createPixelBuffer(pool: pool) else { continue }
-
-            var screenTexture: MTLTexture?
-            var screenSource: CVMetalTexture?
-            if let frame = screenReader.frame(at: t),
-               let wrapped = composer.texture(from: frame) {
-                screenSource = wrapped.source
-                screenTexture = wrapped.texture
-            }
-            var webcamTexture: MTLTexture?
-            var webcamSource: CVMetalTexture?
-            if let webcamReader,
-               let frame = webcamReader.frame(at: webcamMediaTime(forScreenTime: t,
-                                                                  screenFirstHostSeconds: analysis.project.meta.screenFirstHostSeconds,
-                                                                  webcamFirstHostSeconds: analysis.project.meta.webcamFirstHostSeconds)),
-               let wrapped = composer.texture(from: frame) {
-                webcamSource = wrapped.source
-                webcamTexture = wrapped.texture
-            }
-
-            let state = FrameStateBuilder.make(t: t,
-                                               cameraModel: cameraModel,
-                                               smoothedPath: smoothed,
-                                               videoSize: analysis.videoSize,
-                                               settings: settings,
-                                               frameDT: frameDT,
-                                               sourceAspect: config.aspect.ratio)
-            guard let target = composer.texture(from: pixelBuffer) else { continue }
-            let descriptor = MTLRenderPassDescriptor()
-            descriptor.colorAttachments[0].texture = target.texture
-            descriptor.colorAttachments[0].loadAction = .clear
-            descriptor.colorAttachments[0].storeAction = .store
-            descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-            if let buffer = composer.commandQueue.makeCommandBuffer(),
-               let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) {
-                composer.encodeFrame(encoder: encoder,
-                                     screen: screenTexture,
-                                     webcam: webcamTexture,
-                                     state: state,
-                                     outputSize: outputSize)
-                encoder.endEncoding()
-                buffer.commit()
-                await buffer.completed()
-            }
-            _ = screenSource
-            _ = webcamSource
-            _ = target
+            await renderFrame(into: pixelBuffer, at: t)
 
             while !videoInput.isReadyForMoreMediaData {
                 try? await Task.sleep(nanoseconds: 1_000_000)
@@ -322,6 +363,74 @@ final class ExportRenderer: @unchecked Sendable {
                             duration: Double(times.count) / Double(fps),
                             frameCount: times.count,
                             fileSize: attributes[.size] as? Int64 ?? 0)
+    }
+
+    /// GIF path (§3.5): pass 1 renders sampled frames to build a median-cut
+    /// palette, pass 2 renders every frame and appends it palette-mapped.
+    private static func runGIF(config: ExportConfiguration,
+                               times: [Double],
+                               fps: Int,
+                               outputSize: CGSize,
+                               progress: @escaping @Sendable (Double) -> Void,
+                               cancel: CancelToken?,
+                               renderFrame: (CVPixelBuffer, Double) async -> Void) async throws -> ExportResult {
+        let width = Int(outputSize.width)
+        let height = Int(outputSize.height)
+        guard let pixelBuffer = createPixelBuffer(width: width, height: height) else {
+            throw ExportError.writerFailed
+        }
+
+        func readBytes<T>(_ body: (UnsafePointer<UInt8>, Int) -> T) -> T {
+            CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+            let base = CVPixelBufferGetBaseAddress(pixelBuffer)!.assumingMemoryBound(to: UInt8.self)
+            return body(base, CVPixelBufferGetBytesPerRow(pixelBuffer))
+        }
+
+        // Pass 1: sample up to 12 frames for the palette.
+        let sampleStride = max(times.count / 12, 1)
+        var sampleFrames: [(data: Data, width: Int, height: Int, bytesPerRow: Int)] = []
+        for index in Swift.stride(from: 0, to: times.count, by: sampleStride) {
+            await renderFrame(pixelBuffer, times[index])
+            let bytes = readBytes { base, bytesPerRow in
+                Data(bytes: base, count: bytesPerRow * height)
+            }
+            sampleFrames.append((bytes, width, height, CVPixelBufferGetBytesPerRow(pixelBuffer)))
+        }
+        let palette = MedianCut.palette(from: GIFWriter.samplePixels(frames: sampleFrames), maxColors: 256)
+        guard let writer = GIFWriter(url: config.outputURL, palette: palette, frameCount: times.count) else {
+            throw ExportError.writerFailed
+        }
+
+        // Pass 2: full render + palette-mapped append.
+        for (index, t) in times.enumerated() {
+            if cancel?.isCancelled == true {
+                try? FileManager.default.removeItem(at: config.outputURL)
+                throw ExportError.cancelled
+            }
+            await renderFrame(pixelBuffer, t)
+            readBytes { base, bytesPerRow in
+                writer.addFrame(bgra: base, width: width, height: height,
+                                bytesPerRow: bytesPerRow, delay: 1.0 / Double(fps))
+            }
+            progress(Double(index + 1) / Double(times.count))
+        }
+        guard writer.finalize() else { throw ExportError.writerFailed }
+        let attributes = try FileManager.default.attributesOfItem(atPath: config.outputURL.path)
+        return ExportResult(outputURL: config.outputURL,
+                            duration: Double(times.count) / Double(fps),
+                            frameCount: times.count,
+                            fileSize: attributes[.size] as? Int64 ?? 0)
+    }
+
+    private static func createPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, [
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferCGImageCompatibilityKey: true,
+        ] as CFDictionary, &pixelBuffer)
+        guard status == kCVReturnSuccess else { return nil }
+        return pixelBuffer
     }
 
     private static func createPixelBuffer(pool: CVPixelBufferPool) -> CVPixelBuffer? {
