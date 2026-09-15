@@ -104,12 +104,17 @@ final class RecordingSession: ObservableObject {
 
     private var activeWindowPicker: WindowPickerController?
     private var activeAreaPicker: AreaSelectionController?
+    private let selectionFlash = SelectionFlashController()
 
     func selectDisplayMode() {
         settings.sourceMode = SourceMode.display.rawValue
+        if let screen = NSScreen.main {
+            selectionFlash.flash(on: screen, text: "Entire display selected")
+        }
     }
 
     func selectWindowInteractively() {
+        WindowPickerController.log("selectWindowInteractively")
         let picker = WindowPickerController()
         activeWindowPicker = picker
         picker.pickWindow { [weak self] window in
@@ -120,10 +125,16 @@ final class RecordingSession: ObservableObject {
             let app = window.owningApplication?.applicationName ?? ""
             self.selectedWindowTitle = window.title?.isEmpty == false ? window.title! : app
             self.settings.sourceMode = SourceMode.window.rawValue
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            let appKitFrame = CoordinateMapper.cgRectToAppKit(window.frame, primaryHeight: primaryHeight)
+            if let screen = NSScreen.screens.first(where: { $0.frame.intersects(appKitFrame) }) {
+                self.selectionFlash.flash(on: screen, text: "Recording window: \(self.selectedWindowTitle ?? "")")
+            }
         }
     }
 
     func selectAreaInteractively() {
+        WindowPickerController.log("selectAreaInteractively")
         let picker = AreaSelectionController()
         activeAreaPicker = picker
         picker.pickArea { [weak self] screen, rectAppKitGlobal in
@@ -147,6 +158,7 @@ final class RecordingSession: ObservableObject {
                                               scale: scale)
             self.selectedAreaSummary = "\(Int(rect.width))×\(Int(rect.height))"
             self.settings.sourceMode = SourceMode.area.rawValue
+            self.selectionFlash.flash(on: screen, text: "Area \(Int(rect.width)) × \(Int(rect.height)) selected")
         }
     }
 
