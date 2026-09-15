@@ -6,3 +6,6 @@ xcuserdata/
 
 # Generated dev fixture (./scripts/make_fixture.sh)
 Fixtures/
+
+# Code-signing keys (scripts/create_dev_cert.sh) — never commit
+.signing/
