@@ -9,6 +9,7 @@ private let _forceAVKitLinkage: AnyClass = AVPlayerView.self
 
 struct EditorView: View {
     @ObservedObject var viewModel: EditorViewModel
+    @State private var showExportPanel = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -17,6 +18,9 @@ struct EditorView: View {
                     .layoutPriority(1)
                 transportBar
                     .padding(10)
+                TrimRangeView(viewModel: viewModel)
+                    .frame(height: 18)
+                    .padding(.horizontal, 10)
                 ZoomTrackView(viewModel: viewModel)
                     .frame(height: 44)
                     .padding(.horizontal, 10)
@@ -30,6 +34,9 @@ struct EditorView: View {
         }
         .frame(minWidth: 1000, minHeight: 620)
         .background(Color(white: 0.08))
+        .sheet(isPresented: $showExportPanel) {
+            ExportPanelView(viewModel: viewModel)
+        }
         .overlay {
             if let error = viewModel.loadError {
                 Text("Failed to load project: \(error)")
@@ -43,28 +50,19 @@ struct EditorView: View {
     // MARK: - Preview
 
     private var previewArea: some View {
-        GeometryReader { geometry in
-            ZStack {
-                PreviewBackgroundView(spec: viewModel.settings.background)
-                let padding = geometry.size.width * viewModel.settings.padding
-                let aspect = viewModel.videoSize.height > 0
-                    ? viewModel.videoSize.width / viewModel.videoSize.height : 16.0 / 9.0
-                metalContainer(cornerRadius: geometry.size.height * viewModel.settings.cornerRadius)
-                    .aspectRatio(aspect, contentMode: .fit)
-                    .padding(padding)
-            }
-        }
-        .clipped()
-    }
-
-    private func metalContainer(cornerRadius: CGFloat) -> some View {
-        Group {
+        // The Metal composer draws the ENTIRE canvas (background, padding,
+        // rounded corners, shadow, video, webcam, cursor) — identical to
+        // export. SwiftUI only hosts the view and the debug overlay.
+        let aspect = viewModel.videoSize.height > 0
+            ? viewModel.videoSize.width / viewModel.videoSize.height : 16.0 / 9.0
+        return Group {
             if viewModel.renderer.isReady {
                 PreviewMetalView(renderer: viewModel.renderer)
                     .overlay {
                         GeometryReader { geometry in
-                            CursorOverlayView(videoSize: viewModel.videoSize,
-                                              viewSize: geometry.size,
+                            let pad = geometry.size.width * viewModel.settings.padding
+                            CursorOverlayView(quadRect: CGRect(origin: .zero, size: geometry.size)
+                                                  .insetBy(dx: pad, dy: pad),
                                               currentTime: viewModel.currentTime,
                                               sourceRect: viewModel.cameraModel.state(
                                                   at: viewModel.currentTime,
@@ -81,9 +79,8 @@ struct EditorView: View {
                 VideoPlayer(player: viewModel.player)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius, 2)))
-        .shadow(color: .black.opacity(viewModel.settings.shadowEnabled ? 0.55 : 0),
-                radius: 30, y: 14)
+        .aspectRatio(aspect, contentMode: .fit)
+        .clipped()
     }
 
     // MARK: - Transport
@@ -116,50 +113,26 @@ struct EditorView: View {
                 .toggleStyle(.checkbox)
             Toggle("Smoothed path", isOn: $viewModel.showSmoothedPath)
                 .toggleStyle(.checkbox)
+
+            Divider().frame(height: 16)
+
+            Button {
+                showExportPanel = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.plain)
+            .help("Export")
         }
         .foregroundStyle(.white)
     }
 }
 
-/// Renders the background spec behind the preview: preset gradient,
-/// procedural wallpaper, or custom gradient.
-struct PreviewBackgroundView: View {
-    let spec: BackgroundSpec
-
-    var body: some View {
-        switch spec {
-        case .preset(let id):
-            if let preset = Backgrounds.preset(id: id) {
-                content(startHex: preset.startHex, endHex: preset.endHex, wallpaper: preset.wallpaper)
-            }
-        case .custom(let startHex, let endHex):
-            content(startHex: startHex, endHex: endHex, wallpaper: nil)
-        }
-    }
-
-    private func content(startHex: String, endHex: String, wallpaper: Backgrounds.WallpaperKind?) -> some View {
-        Group {
-            if let wallpaper {
-                Image(nsImage: Backgrounds.cachedWallpaper(wallpaper,
-                                                           size: NSSize(width: 640, height: 400),
-                                                           startHex: startHex, endHex: endHex))
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                LinearGradient(colors: [Color(nsColor: Backgrounds.color(hex: startHex)),
-                                        Color(nsColor: Backgrounds.color(hex: endHex))],
-                               startPoint: .top, endPoint: .bottom)
-            }
-        }
-    }
-}
-
 /// Debug overlay: raw cursor path (thin red), smoothed path (thick green),
 /// click dots — drawn up to the playhead, mapped through the current camera
-/// source rect so it aligns with the zoomed preview.
+/// source rect onto the video quad inside the canvas.
 struct CursorOverlayView: View {
-    let videoSize: CGSize
-    let viewSize: CGSize
+    let quadRect: CGRect
     let currentTime: Double
     let sourceRect: CGRect
     let rawPath: [CursorPoint]
@@ -170,11 +143,11 @@ struct CursorOverlayView: View {
 
     var body: some View {
         Canvas { context, _ in
-            guard sourceRect.width > 0, sourceRect.height > 0 else { return }
+            guard sourceRect.width > 0, sourceRect.height > 0, quadRect.width > 0 else { return }
 
             func viewPoint(_ point: CursorPoint) -> CGPoint {
-                CGPoint(x: (point.x - sourceRect.minX) / sourceRect.width * viewSize.width,
-                        y: (point.y - sourceRect.minY) / sourceRect.height * viewSize.height)
+                CGPoint(x: quadRect.minX + (point.x - sourceRect.minX) / sourceRect.width * quadRect.width,
+                        y: quadRect.minY + (point.y - sourceRect.minY) / sourceRect.height * quadRect.height)
             }
 
             func stroke(_ points: [CursorPoint], color: Color, width: CGFloat) {

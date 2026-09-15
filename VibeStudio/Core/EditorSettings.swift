@@ -57,4 +57,7 @@ struct EditorSettings: Codable, Equatable {
     var cornerRadius: Double = 0.04
     var shadowEnabled: Bool = true
     var cameraLayout: CameraLayout = .screenOnly
+    /// Export trim range in seconds; nil = unbounded (recording start/end).
+    var trimStart: Double?
+    var trimEnd: Double?
 }

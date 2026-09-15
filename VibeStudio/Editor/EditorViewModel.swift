@@ -1,9 +1,11 @@
+import AppKit
 import AVFoundation
 import Foundation
 
 /// Owns the editor state: playback, cursor paths, zoom keyframe timeline,
 /// inspector settings, persistence, and the per-tick render state for the
-/// Metal preview.
+/// Metal preview. All derived project data comes from ProjectAnalysis and all
+/// frame state from FrameStateBuilder — the same code the exporter uses.
 @MainActor
 final class EditorViewModel: ObservableObject {
     @Published var currentTime: Double = 0
@@ -16,6 +18,8 @@ final class EditorViewModel: ObservableObject {
     @Published var didLoad = false
     @Published var hasWebcam = false
     @Published var selectedKeyframeID: UUID?
+    @Published var exportProgress: Double?
+    @Published var exportError: String?
 
     @Published var keyframes: [CameraKeyframe] = [] {
         didSet { if !isLoading { schedulePersist() } }
@@ -38,23 +42,28 @@ final class EditorViewModel: ObservableObject {
     private(set) var rawPath: [CursorPoint] = []
     private(set) var smoothedPath: [CursorPoint] = []
     private(set) var clicks: [CursorPoint] = []
-    private var events: [RecordedEvent] = []
-    private var projector: EventProjector?
+    private var analysis: ProjectAnalysis?
     private var bundleURL: URL?
     private var timeObserver: Any?
     private var persistWorkItem: DispatchWorkItem?
+    private var exportCancel: CancelToken?
     private var isLoading = false
-    private var recordingFrameRate: Double = 60
 
-    private var frameDT: Double { 1.0 / recordingFrameRate }
+    private var frameDT: Double { 1.0 / max(analysis?.frameRate ?? 60, 1) }
 
     var cameraModel: CameraModel {
         CameraModel(keyframes: keyframes, style: settings.zoomStyle)
     }
 
+    var exportRange: ClosedRange<Double> {
+        let start = min(max(settings.trimStart ?? 0, 0), duration)
+        let end = min(max(settings.trimEnd ?? duration, start), duration)
+        return start...max(end, start + 0.1)
+    }
+
     init(url: URL) {
         renderer.frameStateProvider = { [weak self] in
-            self?.currentFrameState() ?? PreviewFrameState()
+            self?.currentFrameState() ?? CompositorFrameState()
         }
         Task { await load(url: url) }
     }
@@ -74,56 +83,30 @@ final class EditorViewModel: ObservableObject {
                 bundleURL = try ProjectStore.importLooseFolder(url, to: nil)
             }
             self.bundleURL = bundleURL
-            let project = try ProjectStore.load(bundleURL: bundleURL)
-            events = project.events
+            let analysis = try await ProjectAnalysis.load(bundleURL: bundleURL)
+            self.analysis = analysis
+            rawPath = analysis.rawPath
+            clicks = analysis.clicks
+            duration = analysis.duration
+            videoSize = analysis.videoSize
+            renderer.screenVideoSize = analysis.videoSize
 
-            let projector = EventProjector(meta: project.meta)
-            self.projector = projector
-            recordingFrameRate = max(Double(project.meta.frameRate), 1)
-            let rawCGPath = CursorSmoother.cursorPath(from: project.events)
-            rawPath = rawCGPath.map { point in
-                let pixel = projector.videoPoint(forGlobalCGPoint: point.position)
-                return CursorPoint(t: point.t, x: Double(pixel.x), y: Double(pixel.y))
-            }
-            recomputeSmoothedPath()
-            clicks = project.events.compactMap { event in
-                guard event.kind == .click, let pixel = projector.videoPoint(for: event) else { return nil }
-                return CursorPoint(t: event.t, x: Double(pixel.x), y: Double(pixel.y))
-            }
-
-            let item = AVPlayerItem(url: project.recordingURL)
-            player.replaceCurrentItem(with: item)
-            let asset = item.asset
-            duration = (try? await asset.load(.duration).seconds) ?? 0
-            if let track = try? await asset.loadTracks(withMediaType: .video).first,
-               let size = try? await track.load(.naturalSize) {
-                videoSize = size
-            }
-            renderer.screenVideoSize = videoSize
-
-            if let webcamURL = project.webcamURL {
+            player.replaceCurrentItem(with: AVPlayerItem(url: analysis.project.recordingURL))
+            if let webcamURL = analysis.webcamURL {
                 hasWebcam = true
                 webcamPlayer.replaceCurrentItem(with: AVPlayerItem(url: webcamURL))
                 webcamPlayer.isMuted = true
-                if let track = try? await webcamPlayer.currentItem?.asset.loadTracks(withMediaType: .video).first,
-                   let size = try? await track.load(.naturalSize) {
+                if let item = webcamPlayer.currentItem,
+                   let tracks = try? await item.asset.loadTracks(withMediaType: .video),
+                   let size = try? await tracks.first?.load(.naturalSize) {
                     renderer.webcamVideoSize = size
                 }
             }
             renderer.attachPlayers(screen: player, webcam: hasWebcam ? webcamPlayer : nil)
 
-            if let stored = project.state.keyframes, !stored.isEmpty {
-                keyframes = stored
-            } else {
-                keyframes = AutoZoomEngine.keyframes(from: events,
-                                                     projector: projector,
-                                                     videoSize: videoSize,
-                                                     duration: duration)
-            }
-            if let stored = project.state.editorSettings {
-                settings = stored
-                recomputeSmoothedPath()
-            }
+            keyframes = analysis.resolvedKeyframes
+            settings = analysis.resolvedSettings
+            recomputeSmoothedPath()
 
             addTimeObserver()
             didLoad = true
@@ -138,10 +121,7 @@ final class EditorViewModel: ObservableObject {
     }
 
     private func recomputeSmoothedPath() {
-        let dt = frameDT
-        smoothedPath = CursorSmoother.smooth(CursorSmoother.resample(rawPath, interval: dt),
-                                             interval: dt,
-                                             stiffness: settings.smoothnessPreset.stiffness)
+        smoothedPath = analysis?.smoothedPath(preset: settings.smoothnessPreset) ?? []
     }
 
     // MARK: - Persistence
@@ -210,56 +190,63 @@ final class EditorViewModel: ObservableObject {
     }
 
     func regenerateKeyframes() {
-        guard let projector else { return }
-        keyframes = AutoZoomEngine.keyframes(from: events,
-                                             projector: projector,
-                                             videoSize: videoSize,
-                                             duration: duration)
+        guard let analysis else { return }
+        keyframes = AutoZoomEngine.keyframes(from: analysis.project.events,
+                                             projector: analysis.projector,
+                                             videoSize: analysis.videoSize,
+                                             duration: analysis.duration)
         selectedKeyframeID = nil
+    }
+
+    // MARK: - Export
+
+    func startExport(preset: ExportPreset, aspect: ExportAspect, outputURL: URL) {
+        guard let bundleURL, exportProgress == nil else { return }
+        let cancel = CancelToken()
+        exportCancel = cancel
+        exportProgress = 0
+        exportError = nil
+        let config = ExportConfiguration(bundleURL: bundleURL,
+                                         outputURL: outputURL,
+                                         preset: preset,
+                                         aspect: aspect,
+                                         trimRange: exportRange)
+        Task.detached { [self] in
+            do {
+                let result = try await ExportRenderer.run(configuration: config,
+                                                          progress: { fraction in
+                    Task { @MainActor in self.exportProgress = fraction }
+                }, cancel: cancel)
+                await MainActor.run {
+                    self.exportProgress = nil
+                    NSWorkspace.shared.activateFileViewerSelecting([result.outputURL])
+                }
+            } catch {
+                await MainActor.run {
+                    self.exportProgress = nil
+                    if (error as? ExportError) != .cancelled {
+                        self.exportError = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    func cancelExport() {
+        exportCancel?.cancel()
+        exportCancel = nil
     }
 
     // MARK: - Render state
 
-    private func currentFrameState() -> PreviewFrameState {
-        var state = PreviewFrameState()
-        guard didLoad, videoSize.width > 0 else { return state }
-        let t = player.currentTime().seconds
-        let camera = cameraModel.state(at: t, videoSize: videoSize)
-        let src = camera.sourceRect(videoSize: videoSize)
-        state.screenUVRect = CGRect(x: src.minX / videoSize.width, y: src.minY / videoSize.height,
-                                    width: src.width / videoSize.width, height: src.height / videoSize.height)
-        state.layout = settings.cameraLayout
-
-        let shutter = settings.motionBlurStrength / 60.0
-        let previous = cameraModel.state(at: max(0, t - frameDT), videoSize: videoSize)
-        let cameraVelocity = CGPoint(x: (camera.center.x - previous.center.x) / frameDT,
-                                     y: (camera.center.y - previous.center.y) / frameDT)
-        if hypot(cameraVelocity.x, cameraVelocity.y) > 1 {
-            state.cameraTaps = 1 + Int(settings.motionBlurStrength * Double(PreviewRenderer.maxCameraTaps - 1))
-            state.cameraBlurStep = CGSize(width: cameraVelocity.x / videoSize.width * shutter / CGFloat(state.cameraTaps),
-                                          height: cameraVelocity.y / videoSize.height * shutter / CGFloat(state.cameraTaps))
-        }
-
-        if let position = AutoZoomEngine.cursorPosition(at: t, in: smoothedPath) {
-            let fx = (position.x - src.minX) / src.width
-            let fy = (position.y - src.minY) / src.height
-            state.cursorPosition = CGPoint(x: fx, y: fy)
-            state.cursorHeightFraction = 0.045 * settings.cursorSize
-
-            let taps = 1 + Int(settings.motionBlurStrength * 11)
-            if taps > 1,
-               let previousPosition = AutoZoomEngine.cursorPosition(at: max(0, t - frameDT), in: smoothedPath) {
-                let vx = (position.x - previousPosition.x) / frameDT / src.width
-                let vy = (position.y - previousPosition.y) / frameDT / src.height
-                if hypot(vx, vy) > 0.05 {
-                    state.cursorBlurOffsets = (1..<taps).reversed().map { i in
-                        CGSize(width: -vx * shutter * Double(i) / Double(taps),
-                               height: -vy * shutter * Double(i) / Double(taps))
-                    } + [.zero]
-                }
-            }
-        }
-        return state
+    private func currentFrameState() -> CompositorFrameState {
+        guard didLoad, let analysis else { return CompositorFrameState() }
+        return FrameStateBuilder.make(t: player.currentTime().seconds,
+                                      cameraModel: cameraModel,
+                                      smoothedPath: smoothedPath,
+                                      videoSize: analysis.videoSize,
+                                      settings: settings,
+                                      frameDT: frameDT)
     }
 
     // MARK: - Playback
