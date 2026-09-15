@@ -53,13 +53,19 @@ Guidance for coding agents working in this repo.
 - `VibeStudio/Render/PreviewRenderer.swift` — live driver: AVPlayerItemVideoOutputs,
   window-attached displayLink, MTKView; delegates all drawing to FrameComposer.
 - `VibeStudio/Export/` — `ProjectAnalysis` (shared bundle→inputs loader),
-  `FrameStateBuilder` (shared per-frame state math, also in ProjectAnalysis.swift),
+  `FrameStateBuilder` (shared per-frame state math incl. ripples/badges/
+  static-cursor/loop-end, also in ProjectAnalysis.swift),
   `AspectRetarget` (§3.4.7 keyframe re-targeting, height-basis zoom),
   `ExportRenderer` (AVAssetReader → composer → AVAssetWriter H.264; compressed
-  audio passthrough; webcam sync via meta host-time offsets; trim ranges).
+  audio passthrough; webcam sync via meta host-time offsets; trim ranges;
+  MP4 + GIF branches), `GIFWriter` (median-cut palette + indexed ImageIO GIF).
+- `VibeStudio/Core/EffectsMath.swift` — pure polish curves: `ClickRipple`,
+  `KeystrokeBadges` (text + lifecycle), `CursorVisibility` (hide-static),
+  `LoopCursorEnd`.
 - `VibeStudio/Editor/` — editor window (`EditorWindowManager` NSWindow +
   `EditorView` preview + transport + `TrimRangeView` + `ZoomTrackView` keyframe
-  lane + `InspectorView` + `ExportPanelView` + `Backgrounds` gallery),
+  lane + `ManualZoomEditOverlay` focus-rect editor + `InspectorView` +
+  `ExportPanelView` + `PresetStore` + `Backgrounds` gallery),
   `EditorViewModel` (bundle load, keyframe editing, persistence, export runner),
   `DevSmokeTest` (headless load + auto-zoom summary).
 - `VibeStudio/main.swift` — custom entry: `-open <path> -smokeTest` verifies a

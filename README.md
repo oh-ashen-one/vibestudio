@@ -78,7 +78,13 @@ tccutil reset Accessibility dev.vibestudio.app
       5–10s, 9:16) probe-checked with ffprobe and frame-extracted with ffmpeg;
       preview visually re-verified on a live display after the compositor
       refactor
-- [ ] Phase 5 — polish (click ripples, keystroke badges, GIF, presets)
+- [x] Phase 5 — polish: click ripples, keystroke badges, GIF export, manual
+      zoom focus-rect editing, hide-static-cursor, loop cursor end, presets
+      save/share. Verified: live preview screenshots (ripple ring, upright
+      ⌘ badges, focus-rect editor), CLI export frames (ripple + badge in
+      video), fixture.gif (852x480, 900 frames, frame-inspected), hide-static
+      and loop-end exports frame-checked. Speed-up segments deferred
+      (see DECISIONS.md)
 
 ## License
 
