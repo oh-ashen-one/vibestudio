@@ -104,7 +104,7 @@ meta = {
     "frameRate": 60,
     "systemAudioCaptured": False,
     "screenFirstHostSeconds": 100000.0,
-    "files": ["recording.mov", "events.json", "recording-meta.json"],
+    "files": ["recording.mov", "webcam.mov", "events.json", "recording-meta.json"],
 }
 with open(os.path.join(OUT, "recording-meta.json"), "w") as f:
     json.dump(meta, f, indent=1, sort_keys=True)

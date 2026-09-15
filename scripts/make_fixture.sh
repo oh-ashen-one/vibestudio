@@ -18,6 +18,12 @@ ffmpeg -hide_banner -loglevel error -y \
   -t 30 -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
   "$OUT/recording.mov"
 
+# Webcam stand-in so camera layouts (bubble / webcam-full) can be developed.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc=size=640x480:rate=30" \
+  -t 30 -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+  "$OUT/webcam.mov"
+
 python3 "$(dirname "$0")/make_fixture_events.py" "$OUT"
 
 echo "Fixture written to $OUT"
