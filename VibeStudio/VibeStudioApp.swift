@@ -1,23 +1,42 @@
+import AppKit
 import SwiftUI
 
 @main
 struct VibeStudioApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView()
         }
     }
 }
 
-struct ContentView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("VibeStudio")
-                .font(.largeTitle.bold())
-            Text("Scaffold OK — Phase 1 recorder lands next.")
-                .foregroundStyle(.secondary)
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var session: RecordingSession?
+    private var pill: PillWindowController?
+    private var hotKey: GlobalHotKey?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        let session = RecordingSession()
+        self.session = session
+        pill = PillWindowController(session: session)
+        pill?.showPill()
+        hotKey = GlobalHotKey { [weak session] in
+            Task { @MainActor in
+                session?.toggleRecording()
+            }
         }
-        .padding(40)
-        .frame(minWidth: 480, minHeight: 320)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        pill?.showPill()
+        return false
     }
 }
