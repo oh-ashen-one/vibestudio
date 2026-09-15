@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var session: RecordingSession?
     private var pill: PillWindowController?
     private var hotKey: GlobalHotKey?
+    private var statusBar: StatusBarController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Never restore windows: headless/dev runs must not block on the
@@ -24,14 +25,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         let session = RecordingSession()
         session.onRecordingFinished = { url in
             EditorWindowManager.shared.open(url: url)
         }
         self.session = session
-        pill = PillWindowController(session: session)
-        pill?.showPill()
+        let pillController = PillWindowController(session: session)
+        pill = pillController
+        pillController.showPill()
+        statusBar = StatusBarController(session: session, pill: pillController)
         hotKey = GlobalHotKey { [weak session] in
             Task { @MainActor in
                 session?.toggleRecording()
