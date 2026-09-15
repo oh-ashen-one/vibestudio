@@ -15,8 +15,13 @@ Guidance for coding agents working in this repo.
   `VibeStudio/` or `Tests/` is automatically part of that target.
 - The build must stay green. Before finishing any task: run `./scripts/build.sh`;
   if you touched logic, run `./scripts/test.sh`.
-- Ad-hoc signed (`CODE_SIGN_IDENTITY = "-"`), sandbox OFF, no entitlements
-  file. Do not add signing requirements, entitlements, or paid tooling.
+- Ad-hoc signed by default (`CODE_SIGN_IDENTITY = "-"`), sandbox OFF, no
+  entitlements file. Do not add signing requirements, entitlements, or paid
+  tooling. If a "VibeStudio Dev" identity exists in the keychain
+  (`scripts/create_dev_cert.sh`, gitignored `.signing/` — never commit keys),
+  build/test scripts auto-detect and use it for stable TCC grants.
+  **Do not rebuild-and-relaunch while the user is testing the app** — a new
+  identity or cdhash voids their permission grants mid-session.
 
 ## Architecture map (grows per phase)
 

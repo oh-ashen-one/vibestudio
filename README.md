@@ -37,8 +37,27 @@ tccutil reset ListenEvent dev.vibestudio.app
 tccutil reset Accessibility dev.vibestudio.app
 ```
 
-> Note: local builds are ad-hoc signed. macOS ties permissions to the signed
-> binary, so after rebuilding you may need to re-grant a permission once.
+> Note: local builds are ad-hoc signed by default. macOS ties permissions to
+> the signed binary, so after rebuilding you may need to re-grant a permission
+> once.
+
+### Stable permissions for developers
+
+Ad-hoc signing changes the binary's cdhash on every rebuild, which voids the
+TCC grants above. To make grants survive rebuilds on your machine, create the
+free self-signed identity once:
+
+```bash
+./scripts/create_dev_cert.sh   # creates "VibeStudio Dev" in your login keychain
+```
+
+From then on `scripts/build.sh` / `scripts/test.sh` auto-detect the identity
+and sign with it (`CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="VibeStudio Dev"`),
+so macOS binds permissions to the stable certificate instead of the per-build
+hash. Re-grant **once** after the first stable-signed build; every later build
+keeps working. The repo default stays ad-hoc (`CODE_SIGN_IDENTITY = "-"` in the
+project), so a fresh clone needs no setup; keys live in the gitignored
+`.signing/` directory and are never committed.
 
 ## Repo layout
 
