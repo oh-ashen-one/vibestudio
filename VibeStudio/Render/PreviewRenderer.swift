@@ -33,8 +33,14 @@ final class PreviewRenderer: NSObject {
     private var textureCache: CVMetalTextureCache?
     private var cursorTexture: MTLTexture?
     private var cursorAspect: CGFloat = 1
+    // The MTLTexture from CVMetalTextureGetTexture is only valid while its
+    // CVMetalTexture is retained — keep both, or the video renders black.
     private var screenTexture: MTLTexture?
+    private var screenTextureSource: CVMetalTexture?
     private var webcamTexture: MTLTexture?
+    private var webcamTextureSource: CVMetalTexture?
+    private var didLogFirstScreenFrame = false
+    private var didLogFirstWebcamFrame = false
 
     private var screenOutput: AVPlayerItemVideoOutput?
     private var webcamOutput: AVPlayerItemVideoOutput?
@@ -90,6 +96,8 @@ final class PreviewRenderer: NSObject {
             ])
             item.add(output)
             screenOutput = output
+        } else {
+            print("[VibeStudio] renderer: screen player has no currentItem at attach — no frames will be pulled")
         }
         webcamPlayer = webcam
         if let item = webcam?.currentItem {
@@ -106,30 +114,51 @@ final class PreviewRenderer: NSObject {
     }
 
     @objc func displayLinkTick() {
-        pullFrame(from: screenOutput, player: screenPlayer, into: &screenTexture)
-        pullFrame(from: webcamOutput, player: webcamPlayer, into: &webcamTexture)
+        pullScreenFrame()
+        pullWebcamFrame()
         view?.setNeedsDisplay(view?.bounds ?? .zero)
     }
 
-    private func pullFrame(from output: AVPlayerItemVideoOutput?,
-                           player: AVPlayer?,
-                           into texture: inout MTLTexture?) {
-        guard let output, let player else { return }
+    private func pullScreenFrame() {
+        guard let output = screenOutput, let player = screenPlayer else { return }
         let time = player.currentTime()
         guard output.hasNewPixelBuffer(forItemTime: time),
               let pixelBuffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
-        texture = makeTexture(from: pixelBuffer)
+        guard let source = makeTextureSource(from: pixelBuffer) else { return }
+        screenTextureSource = source
+        screenTexture = CVMetalTextureGetTexture(source)
+        if !didLogFirstScreenFrame {
+            didLogFirstScreenFrame = true
+            print("[VibeStudio] renderer: first screen frame pulled t=\(time.seconds)s")
+        }
     }
 
-    private func makeTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+    private func pullWebcamFrame() {
+        guard let output = webcamOutput, let player = webcamPlayer else { return }
+        let time = player.currentTime()
+        guard output.hasNewPixelBuffer(forItemTime: time),
+              let pixelBuffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
+        guard let source = makeTextureSource(from: pixelBuffer) else { return }
+        webcamTextureSource = source
+        webcamTexture = CVMetalTextureGetTexture(source)
+        if !didLogFirstWebcamFrame {
+            didLogFirstWebcamFrame = true
+            print("[VibeStudio] renderer: first webcam frame pulled t=\(time.seconds)s")
+        }
+    }
+
+    private func makeTextureSource(from pixelBuffer: CVPixelBuffer) -> CVMetalTexture? {
         guard let textureCache else { return nil }
         var texture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             nil, textureCache, pixelBuffer, nil, .bgra8Unorm,
             CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer),
             0, &texture)
-        guard status == kCVReturnSuccess, let texture else { return nil }
-        return CVMetalTextureGetTexture(texture)
+        guard status == kCVReturnSuccess, let texture else {
+            print("[VibeStudio] renderer: CVMetalTextureCacheCreateTextureFromImage failed status=\(status)")
+            return nil
+        }
+        return texture
     }
 
     // MARK: - Drawing
