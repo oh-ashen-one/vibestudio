@@ -102,13 +102,20 @@ final class RecordingSession: ObservableObject {
 
     // MARK: - Source selection
 
+    private var activeWindowPicker: WindowPickerController?
+    private var activeAreaPicker: AreaSelectionController?
+
     func selectDisplayMode() {
         settings.sourceMode = SourceMode.display.rawValue
     }
 
     func selectWindowInteractively() {
-        WindowPickerController().pickWindow { [weak self] window in
-            guard let self, let window else { return }
+        let picker = WindowPickerController()
+        activeWindowPicker = picker
+        picker.pickWindow { [weak self] window in
+            guard let self else { return }
+            self.activeWindowPicker = nil
+            guard let window else { return }
             self.selectedWindowID = window.windowID
             let app = window.owningApplication?.applicationName ?? ""
             self.selectedWindowTitle = window.title?.isEmpty == false ? window.title! : app
@@ -117,8 +124,12 @@ final class RecordingSession: ObservableObject {
     }
 
     func selectAreaInteractively() {
-        AreaSelectionController().pickArea { [weak self] screen, rectAppKitGlobal in
-            guard let self, let screen, let rect = rectAppKitGlobal else { return }
+        let picker = AreaSelectionController()
+        activeAreaPicker = picker
+        picker.pickArea { [weak self] screen, rectAppKitGlobal in
+            guard let self else { return }
+            self.activeAreaPicker = nil
+            guard let screen, let rect = rectAppKitGlobal else { return }
             guard let displayID = screen.displayID else {
                 self.lastError = "Could not identify the selected display."
                 return
