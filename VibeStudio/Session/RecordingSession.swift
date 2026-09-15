@@ -362,7 +362,13 @@ final class RecordingSession: ObservableObject {
 
         if let recorder = screenRecorder {
             if save {
-                try? await recorder.finish()
+                do {
+                    try await recorder.finish()
+                } catch {
+                    let message = "[VibeStudio/session] screen finish failed: \(error.localizedDescription)\n"
+                    FileHandle.standardError.write(Data(message.utf8))
+                    lastError = "Video writer failed: \(error.localizedDescription)"
+                }
                 screenFirstVideo = recorder.firstVideoHostSeconds
                 screenFirstAudio = recorder.firstAudioHostSeconds
             } else {

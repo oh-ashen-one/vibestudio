@@ -22,6 +22,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         var captureSystemAudio: Bool
     }
 
+    /// Unbuffered diagnostics — stdout is block-buffered when redirected.
+    static func log(_ message: String) {
+        FileHandle.standardError.write(Data(("[VibeStudio/screenrec] \(message)\n").utf8))
+    }
+
     private let videoQueue = DispatchQueue(label: "dev.vibestudio.capture.screen.video")
     private let audioQueue = DispatchQueue(label: "dev.vibestudio.capture.screen.audio")
     private let clock: SharedPauseClock
@@ -31,9 +36,20 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var sessionStarted = false
+    private var diagnosticsTimer: DispatchSourceTimer?
 
     private(set) var firstVideoHostSeconds: Double?
     private(set) var firstAudioHostSeconds: Double?
+
+    // Pipeline health counters (guarded by each queue's serial execution).
+    private var videoReceived = 0
+    private var videoAppended = 0
+    private var videoDropped = 0
+    private var videoFailed = 0
+    private var audioReceived = 0
+    private var audioAppended = 0
+    private var audioDropped = 0
+    private var audioFailed = 0
 
     init(clock: SharedPauseClock) {
         self.clock = clock
@@ -81,7 +97,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             throw writer.error ?? RecorderError.writerFailed
         }
 
-        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
+        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
         if cfg.captureSystemAudio {
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
@@ -94,19 +110,38 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         sessionStarted = false
         firstVideoHostSeconds = nil
         firstAudioHostSeconds = nil
+        videoReceived = 0; videoAppended = 0; videoDropped = 0; videoFailed = 0
+        audioReceived = 0; audioAppended = 0; audioDropped = 0; audioFailed = 0
 
         try await stream.startCapture()
+        Self.log("capture started \(cfg.pixelWidth)x\(cfg.pixelHeight)@\(cfg.frameRate) audio=\(cfg.captureSystemAudio)")
+        startDiagnosticsTimer()
+    }
+
+    private func startDiagnosticsTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            Self.log("video recv=\(self.videoReceived) appended=\(self.videoAppended) dropped=\(self.videoDropped) failed=\(self.videoFailed) | audio recv=\(self.audioReceived) appended=\(self.audioAppended) dropped=\(self.audioDropped) failed=\(self.audioFailed) | writer=\(self.writer?.status.rawValue ?? -1)")
+        }
+        timer.resume()
+        diagnosticsTimer = timer
     }
 
     func finish() async throws {
+        diagnosticsTimer?.cancel()
+        diagnosticsTimer = nil
         if let stream { try? await stream.stopCapture() }
         videoInput?.markAsFinished()
         audioInput?.markAsFinished()
         if let writer {
             await writer.finishWriting()
             if writer.status == .failed {
+                Self.log("FINISH FAILED status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
                 throw writer.error ?? RecorderError.writerFailed
             }
+            Self.log("finished OK video=\(videoAppended)/\(videoReceived) audio=\(audioAppended)/\(audioReceived)")
         }
         stream = nil
         writer = nil
@@ -115,6 +150,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     func abort() async {
+        diagnosticsTimer?.cancel()
+        diagnosticsTimer = nil
         if let stream { try? await stream.stopCapture() }
         if let writer, writer.status == .writing { writer.cancelWriting() }
         stream = nil
@@ -139,7 +176,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     private func append(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput, isVideo: Bool) {
-        guard let writer, input.isReadyForMoreMediaData else { return }
+        if isVideo { videoReceived += 1 } else { audioReceived += 1 }
+        guard let writer, input.isReadyForMoreMediaData else {
+            if isVideo { videoDropped += 1 } else { audioDropped += 1 }
+            return
+        }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let hostSeconds = CMTimeGetSeconds(pts)
         let adjusted = CMTime(seconds: clock.adjusted(hostSeconds),
@@ -154,7 +195,14 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         } else {
             if firstAudioHostSeconds == nil { firstAudioHostSeconds = hostSeconds }
         }
-        input.append(copy)
+        if input.append(copy) {
+            if isVideo { videoAppended += 1 } else { audioAppended += 1 }
+        } else {
+            if isVideo { videoFailed += 1 } else { audioFailed += 1 }
+            if (isVideo ? videoFailed : audioFailed) == 1 {
+                Self.log("FIRST APPEND FAILURE isVideo=\(isVideo) writerError=\(writer.error?.localizedDescription ?? "nil") writerStatus=\(writer.status.rawValue)")
+            }
+        }
     }
 }
 
@@ -170,5 +218,11 @@ extension ScreenRecorder: SCStreamOutput {
         default:
             break
         }
+    }
+}
+
+extension ScreenRecorder: SCStreamDelegate {
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Self.log("STREAM STOPPED WITH ERROR: \(error.localizedDescription)")
     }
 }
