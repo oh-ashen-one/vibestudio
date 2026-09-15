@@ -71,6 +71,10 @@ final class RecordingSession: ObservableObject {
     var hasCameraSelected: Bool { selectedCamera != nil }
     var hasMicSelected: Bool { selectedMicrophone != nil }
 
+    /// Called with the .vibestudio bundle URL (or the loose folder if import
+    /// failed) after a recording is stopped and saved.
+    var onRecordingFinished: ((URL) -> Void)?
+
     var selectedCamera: AVCaptureDevice? {
         guard let id = settings.selectedCameraID else { return nil }
         return cameras.first { $0.uniqueID == id }
@@ -384,7 +388,13 @@ final class RecordingSession: ObservableObject {
                       webcamFirstVideo: webcamFirstVideo,
                       webcamFirstAudio: webcamFirstAudio)
             lastOutputFolder = folder
-            NSWorkspace.shared.activateFileViewerSelecting([folder])
+            do {
+                let bundle = try ProjectStore.importLooseFolder(folder, to: nil)
+                onRecordingFinished?(bundle)
+            } catch {
+                lastError = "Saved, but bundle import failed: \(error.localizedDescription)"
+                onRecordingFinished?(folder)
+            }
         } else if let folder {
             try? FileManager.default.removeItem(at: folder)
         }
