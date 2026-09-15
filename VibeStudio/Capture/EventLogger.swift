@@ -28,6 +28,20 @@ final class EventLogger: @unchecked Sendable {
         Double(ticks) * Double(timebase.numer) / Double(timebase.denom) / 1_000_000_000
     }
 
+    /// Observed on macOS 26 (Mac15,14): MOST CGEvent timestamps are mach
+    /// ticks needing the timebase conversion, but SOME events arrive with
+    /// timestamps already in nanoseconds (converting those again inflates
+    /// them ~41.7x — bug: raw-host-looking `t` in events.json). A valid
+    /// timestamp is within milliseconds of the receipt time, so anything
+    /// beyond the tolerance is replaced by the receipt time.
+    static func sanitizedHostSeconds(for event: CGEvent,
+                                     now: Double = CACurrentMediaTime(),
+                                     tolerance: Double = 5) -> Double {
+        let converted = hostSeconds(forMachTimestamp: event.timestamp)
+        guard abs(converted - now) <= tolerance else { return now }
+        return converted
+    }
+
     init(clock: SharedPauseClock) {
         self.clock = clock
     }
@@ -139,7 +153,7 @@ final class EventLogger: @unchecked Sendable {
 
     private func handle(event: CGEvent, type: CGEventType) {
         if clock.isPaused { return }
-        let hostSeconds = Self.hostSeconds(forMachTimestamp: event.timestamp)
+        let hostSeconds = Self.sanitizedHostSeconds(for: event)
         let t = mediaTime(forHostSeconds: hostSeconds)
         guard t >= 0 else { return }
         let location = event.location
