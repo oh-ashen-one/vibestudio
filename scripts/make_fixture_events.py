@@ -79,6 +79,17 @@ while t <= 20.0:
 add(20.0, "click", x=200, y=500, button="left")
 add(21.0, "click", x=200, y=500, button="right")
 
+# 13-16s: long static dwell at (600,300) with sub-2px jitter — exercises the
+# hide-static-cursor fade (dwell 1.0s + fade 0.3s).
+t = 13.0
+i = 0
+while t <= 16.0:
+    jx = 0.5 if i % 2 == 0 else -0.5
+    jy = 0.4 if i % 3 == 0 else -0.4
+    add(t, "cursorMove", x=round(600 + jx, 3), y=round(300 + jy, 3))
+    t += STEP
+    i += 1
+
 # 21-29.9s: wavy drift toward (600,300)
 t = 21.0
 while t < 29.9:
