@@ -3,3 +3,6 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+
+# Generated dev fixture (./scripts/make_fixture.sh)
+Fixtures/
