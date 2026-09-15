@@ -11,28 +11,24 @@ struct EditorView: View {
     @ObservedObject var viewModel: EditorViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Color.black
-                VideoPlayer(player: viewModel.player)
-                GeometryReader { geometry in
-                    CursorOverlayView(videoSize: viewModel.videoSize,
-                                      viewSize: geometry.size,
-                                      currentTime: viewModel.currentTime,
-                                      rawPath: viewModel.rawPath,
-                                      smoothedPath: viewModel.smoothedPath,
-                                      clicks: viewModel.clicks,
-                                      showRaw: viewModel.showRawPath,
-                                      showSmoothed: viewModel.showSmoothedPath)
-                }
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                previewArea
+                    .layoutPriority(1)
+                transportBar
+                    .padding(10)
+                ZoomTrackView(viewModel: viewModel)
+                    .frame(height: 44)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
             }
-            .layoutPriority(1)
+            .background(Color(white: 0.12))
 
-            timelineBar
-                .padding(10)
-                .background(Color(white: 0.12))
+            InspectorView(viewModel: viewModel)
+                .frame(width: 250)
+                .background(Color(white: 0.09))
         }
-        .frame(minWidth: 800, minHeight: 540)
+        .frame(minWidth: 1000, minHeight: 620)
         .background(Color(white: 0.08))
         .overlay {
             if let error = viewModel.loadError {
@@ -44,7 +40,55 @@ struct EditorView: View {
         }
     }
 
-    private var timelineBar: some View {
+    // MARK: - Preview
+
+    private var previewArea: some View {
+        GeometryReader { geometry in
+            ZStack {
+                PreviewBackgroundView(spec: viewModel.settings.background)
+                let padding = geometry.size.width * viewModel.settings.padding
+                let aspect = viewModel.videoSize.height > 0
+                    ? viewModel.videoSize.width / viewModel.videoSize.height : 16.0 / 9.0
+                metalContainer(cornerRadius: geometry.size.height * viewModel.settings.cornerRadius)
+                    .aspectRatio(aspect, contentMode: .fit)
+                    .padding(padding)
+            }
+        }
+        .clipped()
+    }
+
+    private func metalContainer(cornerRadius: CGFloat) -> some View {
+        Group {
+            if viewModel.renderer.isReady {
+                PreviewMetalView(renderer: viewModel.renderer)
+                    .overlay {
+                        GeometryReader { geometry in
+                            CursorOverlayView(videoSize: viewModel.videoSize,
+                                              viewSize: geometry.size,
+                                              currentTime: viewModel.currentTime,
+                                              sourceRect: viewModel.cameraModel.state(
+                                                  at: viewModel.currentTime,
+                                                  videoSize: viewModel.videoSize
+                                              ).sourceRect(videoSize: viewModel.videoSize),
+                                              rawPath: viewModel.rawPath,
+                                              smoothedPath: viewModel.smoothedPath,
+                                              clicks: viewModel.clicks,
+                                              showRaw: viewModel.showRawPath,
+                                              showSmoothed: viewModel.showSmoothedPath)
+                        }
+                    }
+            } else {
+                VideoPlayer(player: viewModel.player)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius, 2)))
+        .shadow(color: .black.opacity(viewModel.settings.shadowEnabled ? 0.55 : 0),
+                radius: 30, y: 14)
+    }
+
+    // MARK: - Transport
+
+    private var transportBar: some View {
         HStack(spacing: 10) {
             Button {
                 viewModel.togglePlayPause()
@@ -77,13 +121,47 @@ struct EditorView: View {
     }
 }
 
+/// Renders the background spec behind the preview: preset gradient,
+/// procedural wallpaper, or custom gradient.
+struct PreviewBackgroundView: View {
+    let spec: BackgroundSpec
+
+    var body: some View {
+        switch spec {
+        case .preset(let id):
+            if let preset = Backgrounds.preset(id: id) {
+                content(startHex: preset.startHex, endHex: preset.endHex, wallpaper: preset.wallpaper)
+            }
+        case .custom(let startHex, let endHex):
+            content(startHex: startHex, endHex: endHex, wallpaper: nil)
+        }
+    }
+
+    private func content(startHex: String, endHex: String, wallpaper: Backgrounds.WallpaperKind?) -> some View {
+        Group {
+            if let wallpaper {
+                Image(nsImage: Backgrounds.cachedWallpaper(wallpaper,
+                                                           size: NSSize(width: 640, height: 400),
+                                                           startHex: startHex, endHex: endHex))
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LinearGradient(colors: [Color(nsColor: Backgrounds.color(hex: startHex)),
+                                        Color(nsColor: Backgrounds.color(hex: endHex))],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        }
+    }
+}
+
 /// Debug overlay: raw cursor path (thin red), smoothed path (thick green),
-/// click dots — drawn up to the current playhead, in video pixel space mapped
-/// onto the aspect-fitted display rect.
+/// click dots — drawn up to the playhead, mapped through the current camera
+/// source rect so it aligns with the zoomed preview.
 struct CursorOverlayView: View {
     let videoSize: CGSize
     let viewSize: CGSize
     let currentTime: Double
+    let sourceRect: CGRect
     let rawPath: [CursorPoint]
     let smoothedPath: [CursorPoint]
     let clicks: [CursorPoint]
@@ -91,13 +169,12 @@ struct CursorOverlayView: View {
     let showSmoothed: Bool
 
     var body: some View {
-        Canvas { context, size in
-            guard videoSize.width > 0, videoSize.height > 0 else { return }
-            let rect = Self.fittedRect(videoSize: videoSize, in: size)
+        Canvas { context, _ in
+            guard sourceRect.width > 0, sourceRect.height > 0 else { return }
 
             func viewPoint(_ point: CursorPoint) -> CGPoint {
-                CGPoint(x: rect.minX + point.x / videoSize.width * rect.width,
-                        y: rect.minY + point.y / videoSize.height * rect.height)
+                CGPoint(x: (point.x - sourceRect.minX) / sourceRect.width * viewSize.width,
+                        y: (point.y - sourceRect.minY) / sourceRect.height * viewSize.height)
             }
 
             func stroke(_ points: [CursorPoint], color: Color, width: CGFloat) {
@@ -125,15 +202,6 @@ struct CursorOverlayView: View {
                 context.fill(dot, with: .color(.red))
             }
         }
-        .frame(width: viewSize.width, height: viewSize.height)
         .allowsHitTesting(false)
-    }
-
-    static func fittedRect(videoSize: CGSize, in size: CGSize) -> CGRect {
-        let scale = min(size.width / videoSize.width, size.height / videoSize.height)
-        let width = videoSize.width * scale
-        let height = videoSize.height * scale
-        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2,
-                      width: width, height: height)
     }
 }

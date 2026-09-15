@@ -1,6 +1,7 @@
 import Foundation
 
-/// project.json inside a .vibestudio bundle.
+/// project.json inside a .vibestudio bundle. v2 adds the zoom keyframe
+/// timeline and inspector settings; both are optional so v1 files decode.
 struct ProjectState: Codable, Equatable {
     var version: Int = 1
     var createdAt: Date
@@ -9,6 +10,8 @@ struct ProjectState: Codable, Equatable {
     var webcamFile: String?
     var eventsFile: String
     var metaFile: String
+    var keyframes: [CameraKeyframe]?
+    var editorSettings: EditorSettings?
 }
 
 struct LoadedProject: Equatable {
@@ -87,6 +90,24 @@ enum ProjectStore {
         let log = try JSONDecoder().decode(EventLog.self,
                                            from: Data(contentsOf: bundleURL.appendingPathComponent(state.eventsFile)))
         return LoadedProject(bundleURL: bundleURL, state: state, meta: meta, events: log.events)
+    }
+
+    /// Persists keyframes + inspector settings into an existing bundle's
+    /// project.json, preserving the v1 fields.
+    static func save(bundleURL: URL,
+                     keyframes: [CameraKeyframe],
+                     editorSettings: EditorSettings) throws {
+        let stateDecoder = JSONDecoder()
+        stateDecoder.dateDecodingStrategy = .iso8601
+        var state = try stateDecoder.decode(ProjectState.self,
+                                            from: Data(contentsOf: bundleURL.appendingPathComponent(projectFile)))
+        state.version = 2
+        state.keyframes = keyframes
+        state.editorSettings = editorSettings
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: bundleURL.appendingPathComponent(projectFile), options: .atomic)
     }
 }
 
